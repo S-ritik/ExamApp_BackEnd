@@ -403,8 +403,14 @@ class ChangePasswordView(generics.GenericAPIView):
 
 class InstituteListCreateView(generics.ListCreateAPIView):
     """List all active institutes and create new institutes"""
-    queryset = Institute.objects.filter(is_active=True)
+    queryset = Institute.objects.all()
     permission_classes = [permissions.AllowAny]
+    
+    def get_queryset(self):
+        user = self.request.user
+        if user.is_authenticated and (getattr(user, 'role', '') or '').lower() in ['manager', 'platform_owner', 'super_admin']:
+            return Institute.objects.all()
+        return Institute.objects.filter(is_active=True)
     
     def get_serializer_class(self):
         if self.request.method == 'POST':

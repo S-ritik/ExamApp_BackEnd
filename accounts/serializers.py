@@ -56,11 +56,13 @@ class InstituteCreateSerializer(serializers.ModelSerializer):
         validated_data['is_verified'] = True  # Auto-verify user-created institutes
         institute = Institute.objects.create(**validated_data)
         
-        # Update user's institute and role - make them super_admin
-        user.institute = institute
-        user.role = 'super_admin'
-        user.is_staff = True  # Give staff access
-        user.save()
+        # Update user's institute and role - make them super_admin only for onboarding users
+        user_role = (getattr(user, 'role', '') or '').lower()
+        if user_role not in ['manager', 'platform_owner']:
+            user.institute = institute
+            user.role = 'super_admin'
+            user.is_staff = True  # Give staff access
+            user.save()
         
         # Auto-create 2 default exam patterns for this new institute
         try:

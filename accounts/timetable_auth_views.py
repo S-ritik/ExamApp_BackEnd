@@ -116,7 +116,8 @@ class BaseRoleLoginView(APIView):
                 'student': ['STUDENT', 'student'],
                 'STAFF': ['STAFF', 'staff'],
                 'staff': ['STAFF', 'staff'],
-                'manager': ['manager', 'super_admin', 'SUPER_ADMIN'],
+                'manager': ['manager', 'super_admin', 'SUPER_ADMIN', 'platform_owner'],
+                'platform_owner': ['platform_owner', 'manager'],
             }
             
             user_allowed = False
@@ -251,7 +252,7 @@ class ManagerLoginView(BaseRoleLoginView):
     Manager login - Company level management.
     Has access to all features across all institutes.
     """
-    allowed_roles = ('manager', 'super_admin')
+    allowed_roles = ('manager', 'super_admin', 'platform_owner')
 
 
 @api_view(["POST"])
