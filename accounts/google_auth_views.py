@@ -214,6 +214,13 @@ def google_login(request):
             'role': user.role,
             'institute_id': user.institute_id,
             'institute_name': user.institute.name if user.institute else None,
+            'institute': {
+                'id': user.institute.id,
+                'name': user.institute.name,
+                'logo': request.build_absolute_uri(user.institute.logo.url) if bool(user.institute.logo) else None,
+                'subdomain': user.institute.subdomain,
+                'website': user.institute.website,
+            } if user.institute else None,
             'db_name': user.institute.db_name if user.institute else 'default',
             'center_id': center_id,
             'center_name': center_name,

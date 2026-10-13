@@ -18,16 +18,16 @@ from .timetable_views import _get_center_by_name_or_id
 
 
 def _check_super_admin(request):
-    """Helper to check if user is super admin (supports both role formats)."""
+    """Helper to check if user is super admin, manager, or platform owner."""
     if not request.user.is_authenticated:
         return False, Response(
             {"detail": "Authentication required."},
             status=status.HTTP_401_UNAUTHORIZED,
         )
-    # Support both lowercase and uppercase variants
-    if request.user.role not in ['super_admin', 'SUPER_ADMIN']:
+    user_role = (request.user.role or '').lower()
+    if user_role not in ['super_admin', 'superadmin', 'manager', 'platform_owner']:
         return False, Response(
-            {"detail": "Only Super Admin can perform this action."},
+            {"detail": "Only Super Admin, Manager, or Platform Owner can perform this action."},
             status=status.HTTP_403_FORBIDDEN,
         )
     return True, None

@@ -13,15 +13,16 @@ from .utils import generate_user_code, generate_password, send_credentials_email
 
 
 def _check_super_admin(request):
-    """Helper to check if user is super admin."""
+    """Helper to check if user is super admin, manager, or platform owner."""
     if not request.user.is_authenticated:
         return False, Response(
             {"detail": "Authentication required."},
             status=status.HTTP_401_UNAUTHORIZED,
         )
-    if request.user.role not in ['super_admin', 'SUPER_ADMIN']:
+    user_role = (request.user.role or '').lower()
+    if user_role not in ['super_admin', 'superadmin', 'manager', 'platform_owner']:
         return False, Response(
-            {"detail": "Only Super Admin can perform this action."},
+            {"detail": "Only Super Admin, Manager, or Platform Owner can perform this action."},
             status=status.HTTP_403_FORBIDDEN,
         )
     return True, None
@@ -323,20 +324,20 @@ def _get_center_by_name_or_id(center_name=None, center_id=None):
 
 
 def _check_admin_or_super(request):
-    """Helper to check if user is admin or super admin."""
+    """Helper to check if user is admin, super admin, manager, or platform owner."""
     if not request.user.is_authenticated:
         return False, None, Response(
             {"detail": "Authentication required."},
             status=status.HTTP_401_UNAUTHORIZED,
         )
     user = request.user
-    user_role = user.role.lower() if user.role else ''
-    is_super = user_role in ['super_admin', 'SUPER_ADMIN']
+    user_role = (user.role or '').lower()
+    is_super = user_role in ['super_admin', 'superadmin', 'manager', 'platform_owner']
     is_admin = user_role in ['admin', 'institute_admin', 'exam_admin']
     
     if not (is_super or is_admin):
         return False, None, Response(
-            {"detail": f"Only Admin or Super Admin can perform this action. Your role: {user.role}"},
+            {"detail": f"Only Admin, Super Admin, or Manager can perform this action. Your role: {user.role}"},
             status=status.HTTP_403_FORBIDDEN,
         )
     
@@ -1558,7 +1559,8 @@ def list_people(request):
     target_institute = user.institute
     institute_id = request.GET.get('institute_id')
     
-    if user.role in ['super_admin', 'SUPER_ADMIN']:
+    user_role = (user.role or '').lower()
+    if user_role in ['super_admin', 'superadmin', 'manager', 'platform_owner']:
         if institute_id:
             try:
                 target_institute = Institute.objects.get(id=institute_id)

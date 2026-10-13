@@ -243,6 +243,13 @@ def user_login_view(request):
             'role': user.role,
             'institute_id': user.institute_id,
             'institute_name': user.institute.name if user.institute else None,
+            'institute': {
+                'id': user.institute.id,
+                'name': user.institute.name,
+                'logo': request.build_absolute_uri(user.institute.logo.url) if bool(user.institute.logo) else None,
+                'subdomain': user.institute.subdomain,
+                'website': user.institute.website,
+            } if user.institute else None,
             'db_name': user.institute.db_name if user.institute else 'default',
             'center_id': center_id,
             'center_name': center_name,
@@ -434,7 +441,8 @@ class UserListView(generics.ListCreateAPIView):
         
         center_id = self.request.query_params.get('center_id')
         
-        if user.role in ['super_admin', 'SUPER_ADMIN']:
+        user_role = (user.role or '').lower()
+        if user_role in ['super_admin', 'superadmin', 'manager', 'platform_owner']:
             queryset = User.objects.all()
             if eff_institute_id:
                 queryset = queryset.filter(institute_id=eff_institute_id)
@@ -443,7 +451,7 @@ class UserListView(generics.ListCreateAPIView):
             return queryset
         
         # Only Institute Admins (and Exam Admins) see all institute users
-        if user.role in ['institute_admin', 'exam_admin']:
+        if user_role in ['institute_admin', 'exam_admin']:
             return User.objects.filter(institute=user.institute)
             
         # For Center Admin ('admin'), Teacher, Student, Staff - return users in their center
@@ -459,9 +467,10 @@ class UserListView(generics.ListCreateAPIView):
 
     def perform_create(self, serializer):
         user = self.request.user
+        user_role = (user.role or '').lower()
         
         # Check permissions
-        if user.role not in ['super_admin', 'SUPER_ADMIN', 'institute_admin', 'exam_admin', 'admin', 'ADMIN']:
+        if user_role not in ['super_admin', 'superadmin', 'institute_admin', 'exam_admin', 'admin', 'manager', 'platform_owner']:
              raise PermissionDenied("You do not have permission to create users.")
 
         # For institute admins, force the institute_id
@@ -480,8 +489,9 @@ class UserDetailView(generics.RetrieveUpdateDestroyAPIView):
         user = self.request.user
         # Priority: User's assigned institute (strict) > Query parameter (filter)
         eff_institute_id = getattr(user, 'institute_id', None) or self.request.query_params.get('institute_id')
+        user_role = (user.role or '').lower()
         
-        if user.role in ['super_admin']:
+        if user_role in ['super_admin', 'superadmin', 'manager', 'platform_owner']:
             if eff_institute_id:
                 return User.objects.filter(institute_id=eff_institute_id)
             return User.objects.all()
@@ -493,9 +503,10 @@ class UserDetailView(generics.RetrieveUpdateDestroyAPIView):
     def perform_update(self, serializer):
         actor = self.request.user
         instance = serializer.instance
+        actor_role = (actor.role or '').lower()
 
-        # Allow super admins to update anyone
-        if actor.role in ['super_admin']:
+        # Allow super admins and managers to update anyone
+        if actor_role in ['super_admin', 'superadmin', 'manager', 'platform_owner']:
             serializer.save()
             return
 
@@ -512,9 +523,10 @@ class UserDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     def perform_destroy(self, instance):
         actor = self.request.user
+        actor_role = (actor.role or '').lower()
 
-        # Allow super admins to delete anyone
-        if actor.role in ['super_admin']:
+        # Allow super admins and managers to delete anyone
+        if actor_role in ['super_admin', 'superadmin', 'manager', 'platform_owner']:
             instance.delete()
             return
 
@@ -599,9 +611,13 @@ class InstituteUpdateView(generics.UpdateAPIView):
     
     def get_queryset(self):
         user = self.request.user
-        if user.role in ['super_admin', 'SUPER_ADMIN', 'platform_owner']:
+        user_role = (user.role or '').lower()
+        if user_role in ['platform_owner', 'manager']:
             return Institute.objects.all()
-        return Institute.objects.filter(users=user, users__role__in=['institute_admin', 'super_admin'])
+        if user_role in ['super_admin', 'superadmin', 'institute_admin']:
+            if user.institute_id:
+                return Institute.objects.filter(id=user.institute_id)
+        return Institute.objects.none()
 
 
 class InstituteUserListView(generics.ListAPIView):

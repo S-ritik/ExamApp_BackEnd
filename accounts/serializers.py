@@ -32,6 +32,8 @@ class InstituteSerializer(serializers.ModelSerializer):
         return obj.created_by.get_full_name() if obj.created_by else None
 
 
+
+
 class InstituteCreateSerializer(serializers.ModelSerializer):
     """Serializer for creating new institutes"""
     class Meta:
