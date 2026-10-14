@@ -677,7 +677,6 @@ def start_exam(request):
 
         # Record active student usage (once per student per month)
         from billing.models import UsageMetric
-        from django.utils import timezone
         now = timezone.now()
         this_month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         
