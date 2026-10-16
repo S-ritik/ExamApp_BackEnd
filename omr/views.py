@@ -14,6 +14,7 @@ from rest_framework.parsers import MultiPartParser, FormParser
 
 from django.utils import timezone
 from exams.models import Exam, ExamAttempt
+from accounts.subdomains import is_platform_user
 from .models import OMRSheet, OMRSubmission, AnswerKey
 from .serializers import (
     OMRSheetSerializer,
@@ -36,7 +37,7 @@ class OMRSheetViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         """Filter OMR sheets by user's institute"""
         user = self.request.user
-        if user.role == 'super_admin':
+        if is_platform_user(user):
             return OMRSheet.objects.all()
         queryset = OMRSheet.objects.filter(exam__institute=user.institute)
         
@@ -55,8 +56,8 @@ class OMRSheetViewSet(viewsets.ModelViewSet):
         POST /api/omr/sheets/generate/{exam_id}/
         """
         # Tenant scope: only allow operating on exams in the caller's institute.
-        # Super admins retain global access; everyone else is restricted.
-        exam_qs = Exam.objects.all() if request.user.role == 'super_admin' \
+        # Only platform users work across institutes; super admins own one institute.
+        exam_qs = Exam.objects.all() if is_platform_user(request.user) \
             else Exam.objects.filter(institute=request.user.institute)
         exam = get_object_or_404(exam_qs, id=exam_id)
         
@@ -164,7 +165,7 @@ class OMRSubmissionViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         """Filter submissions based on user role"""
         user = self.request.user
-        if user.role == 'super_admin':
+        if is_platform_user(user):
             queryset = OMRSubmission.objects.all()
         elif user.role in ['institute_admin', 'exam_admin', 'teacher']:
             queryset = OMRSubmission.objects.filter(omr_sheet__exam__institute=user.institute)
@@ -187,7 +188,7 @@ class OMRSubmissionViewSet(viewsets.ModelViewSet):
         """
         # Tenant scope: prevent uploading OMR submissions against another
         # institute's exam by guessing the exam id.
-        exam_qs = Exam.objects.all() if request.user.role == 'super_admin' \
+        exam_qs = Exam.objects.all() if is_platform_user(request.user) \
             else Exam.objects.filter(institute=request.user.institute)
         exam = get_object_or_404(exam_qs, id=exam_id)
         
@@ -346,7 +347,7 @@ class AnswerKeyViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         """Filter answer keys by user's institute"""
         user = self.request.user
-        if user.role == 'super_admin':
+        if is_platform_user(user):
             return AnswerKey.objects.all()
         return AnswerKey.objects.filter(exam__institute=user.institute)
     
@@ -361,7 +362,7 @@ class AnswerKeyViewSet(viewsets.ModelViewSet):
         GET /api/omr/answer-keys/exam/{exam_id}/ - Get answer key
         POST /api/omr/answer-keys/exam/{exam_id}/ - Create/update answer key
         """
-        exam_qs = Exam.objects.all() if request.user.role == 'super_admin' \
+        exam_qs = Exam.objects.all() if is_platform_user(request.user) \
             else Exam.objects.filter(institute=request.user.institute)
         exam = get_object_or_404(exam_qs, id=exam_id)
         
@@ -410,7 +411,7 @@ class AnswerKeyViewSet(viewsets.ModelViewSet):
         - marks: Positive marks for correct answer
         - negative: Negative marks for wrong answer (0 for no negative marking)
         """
-        exam_qs = Exam.objects.all() if request.user.role == 'super_admin' \
+        exam_qs = Exam.objects.all() if is_platform_user(request.user) \
             else Exam.objects.filter(institute=request.user.institute)
         exam = get_object_or_404(exam_qs, id=exam_id)
 

@@ -15,7 +15,17 @@ SECRET_KEY = SECRET_KEY
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = DEBUG
 
-ALLOWED_HOSTS = ['*']
+# Host header allow-list (from config.ALLOWED_HOSTS / .env). Institute portals
+# (<subdomain>.exams.dashoapp.com) are always allowed so a narrower .env list
+# cannot silently break them; *.localhost is allowed in DEBUG for local portals.
+ROOT_DOMAIN = 'exams.dashoapp.com'
+# '*.example.com' is not Django syntax (it matches nothing); '.example.com' is.
+ALLOWED_HOSTS = [h[1:] if h.startswith('*.') else h for h in ALLOWED_HOSTS if h]
+ALLOWED_HOSTS = list(dict.fromkeys(ALLOWED_HOSTS + [ROOT_DOMAIN, '.' + ROOT_DOMAIN] + (['.localhost'] if DEBUG else [])))
+
+# nginx terminates TLS and sets X-Forwarded-Proto, so request.is_secure() and
+# build_absolute_uri() (institute logo URLs) produce https:// links.
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
 # Application definition
 DJANGO_APPS = [
@@ -436,6 +446,7 @@ GEMINI_MODEL = CONFIG_GEMINI_MODEL or os.getenv('GEMINI_MODEL', 'gemini-2.5-flas
 GEMINI_TEMPERATURE = float(CONFIG_GEMINI_TEMPERATURE or os.getenv('GEMINI_TEMPERATURE', '0.7'))
 GEMINI_TOP_P = float(CONFIG_GEMINI_TOP_P or os.getenv('GEMINI_TOP_P', '0.95'))
 GEMINI_MAX_TOKENS = int(CONFIG_GEMINI_MAX_TOKENS or os.getenv('GEMINI_MAX_TOKENS', '8192'))
+from config import EXTRACTION_GEMINI_MODEL, EXTRACTION_GEMINI_THINKING_LEVEL  # noqa: E402
 
 # ===========================
 # Azure OpenAI Configuration

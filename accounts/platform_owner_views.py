@@ -1,7 +1,7 @@
 from rest_framework import status, permissions, generics
 from rest_framework.response import Response
 from rest_framework.decorators import api_view, permission_classes
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from .models import Institute, User
 from .platform_serializers import PlatformInstituteSerializer, CreateInstituteWithAdminSerializer, PlatformUserSerializer
 
@@ -105,5 +105,11 @@ def create_institute_with_admin(request):
                 'institute': PlatformInstituteSerializer(institute).data
             }, status=status.HTTP_201_CREATED)
             
+    except IntegrityError:
+        # Lost a race on a unique field (name / subdomain / admin email)
+        return Response(
+            {'detail': 'An institute with this name or subdomain, or a user with this email, already exists.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
     except Exception as e:
         return Response({'detail': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

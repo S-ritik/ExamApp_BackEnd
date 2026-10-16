@@ -14,7 +14,7 @@ logger = logging.getLogger('extraction')
 
 
 # ──────────────────────────────────────────────
-# Agentic Pipeline Task (Mathpix + Gemini + Micro-Batching)
+# V3 extraction: Mathpix OCR + one structured Gemini call
 # ──────────────────────────────────────────────
 
 @shared_task(
@@ -25,162 +25,86 @@ logger = logging.getLogger('extraction')
 )
 def extract_questions_v3_task(self, job_id: str, subjects: list = None):
     """
-    High-fidelity extraction using AgentExtractionService.
-    Replaces the old V3 pipeline with the new Agentic logic.
+    Extract every question in the job's file into ExtractedQuestion rows for review.
+
+    The whole paper is OCR'd once and structured in one model call (see
+    questions/services/paper_extraction.py). The model classifies questions against all
+    of the pattern's subjects; `subjects` (from the UI) only filters which ones are kept.
     """
-    from django.conf import settings
+    import time
     from questions.models import ExtractionJob, ExtractedQuestion
-    from questions.services.agent_extraction_service import AgentExtractionService
-    
-    job_uuid = UUID(job_id)
-    job = ExtractionJob.objects.get(id=job_uuid)
+    from questions.services.paper_extraction import PaperExtractionError, extract_questions, map_subject
+
+    job = ExtractionJob.objects.get(id=UUID(job_id))
     job.status = 'processing'
     job.progress_percent = 10
-    job.save()
-    
+    job.error_message = ''
+    job.save(update_fields=['status', 'progress_percent', 'error_message'])
+    started = time.time()
+
     try:
-        service = AgentExtractionService(
-            gemini_key=getattr(settings, 'GEMINI_API_KEY', ''),
-            mathpix_id=getattr(settings, 'MATHPIX_APP_ID', ''),
-            mathpix_key=getattr(settings, 'MATHPIX_APP_KEY', '')
-        )
-        
-        # Run the full agentic pipeline
-        # Passing subjects_to_process=None triggers auto-detection
-        
-        # Try to use pre-analysis or perform on-the-fly separation
-        separated_content = None
-        # 1. Use passed subjects if available
-        if subjects:
-             logger.info(f"Task received specific subjects to extract: {subjects}")
-             # Preserving the passed subjects
-        
-        # 2. Use existing PreAnalysisJob if available
-        elif job.pre_analysis_job and job.pre_analysis_job.subject_separated_content:
-            logger.info(f"Using existing pre-analysis for job {job.id}")
-            # Ensure format is Dict[subject, content_str] or compatible
-            raw_content = job.pre_analysis_job.subject_separated_content
-            separated_content = {}
-            
-            # Normalize content format
-            for subj, data in raw_content.items():
-                if isinstance(data, dict):
-                    separated_content[subj] = data.get('content', '')
-                else:
-                    separated_content[subj] = str(data)
-                    
-            subjects = list(separated_content.keys())
-            
-        # 3. If no pre-analysis and no subjects passed, perform on-the-fly separation
-        else:
-            logger.info("No pre-analysis found. Performing on-the-fly separation...")
-            try:
-                # We need text for analyzer. Use Mathpix if available, else local parser.
-                markdown_text = ""
-                if getattr(settings, 'MATHPIX_APP_ID', ''):
-                    try:
-                        from questions.services.agent_extraction_service import MathpixOCR
-                        mathpix = MathpixOCR(getattr(settings, 'MATHPIX_APP_ID', ''), getattr(settings, 'MATHPIX_APP_KEY', ''))
-                        markdown_text = mathpix.process_pdf(job.file_path)
-                    except Exception as e:
-                        logger.warning(f"Mathpix failed during on-the-fly separation: {e}")
-                
-                if not markdown_text:
-                    logger.info("Using local parser for on-the-fly separation text extraction.")
-                    from questions.services.file_parser import FileParserService
-                    parser = FileParserService()
-                    markdown_text = parser.parse_file(job.file_path, 'application/pdf')
-                
-                # Get pattern subjects to guide separation
-                pattern_subjects = []
-                if job.pattern:
-                    pattern_subjects = list(job.pattern.sections.values_list('subject', flat=True).distinct())
-                
-                # Run analyzer
-                from questions.services.document_pre_analyzer import DocumentPreAnalyzer
-                analyzer = DocumentPreAnalyzer(api_key=getattr(settings, 'GEMINI_API_KEY', None))
-                result = analyzer.analyze_document(markdown_text, pattern_subjects)
-                
-                if result.is_valid and result.subject_separated_content:
-                    # Normalize content format
-                    separated_content = {}
-                    for subj, data in result.subject_separated_content.items():
-                        if isinstance(data, dict):
-                            separated_content[subj] = data.get('content', '')
-                        else:
-                            separated_content[subj] = str(data)
-                            
-                    subjects = list(separated_content.keys())
-                    logger.info(f"On-the-fly separation successful: {subjects}")
-                else:
-                    logger.warning("On-the-fly separation returned no content. Falling back to simple detection.")
-                    # Fallback allows AgentExtractionService to do its own simple detection
-                    subjects = service.detect_subjects(markdown_text)
-                    
-            except Exception as e:
-                logger.error(f"On-the-fly separation failed: {e}")
-                # Fallback handled below
-        
-        # 4. Final Fallback if still no subjects
-        if not subjects:
-             # This means both pre-analysis and on-the-fly failed or weren't run?
-             # For on-the-fly failure, we might not have markdown_text in scope if it failed early.
-             # We let AgentExtractionService handle detection internally if we pass empty list.
-             # But we need subjects for the loop below.
-             
-             # Re-instantiate mathpix to be safe or use service's detection
-             from questions.services.agent_extraction_service import MathpixOCR
-             mathpix = MathpixOCR(getattr(settings, 'MATHPIX_APP_ID', ''), getattr(settings, 'MATHPIX_APP_KEY', ''))
-             markdown_text = mathpix.process_pdf(job.file_path)
-             subjects = service.detect_subjects(markdown_text)
-        
-        total_subjects = len(subjects) if subjects else 1
+        pattern_subjects = []
+        if job.pattern:
+            pattern_subjects = list(dict.fromkeys(job.pattern.sections.values_list('subject', flat=True)))
+        wanted = [s for s in (subjects or []) if s]
+        all_subjects = list(dict.fromkeys(pattern_subjects + wanted)) or ['General']
 
-        # Get exam_mode from pattern for post-processing (e.g. image conversion)
-        exam_mode = getattr(job.pattern, 'exam_mode', None) if job.pattern else None
+        result = extract_questions(job.file_path, all_subjects)
 
-        raw_questions = []
-        for idx, subj in enumerate(subjects):
-            # Update progress per subject
-            job.progress_percent = int((idx / total_subjects) * 90) + 10
-            job.save()
+        keep = {map_subject(s, all_subjects).lower() for s in wanted}
+        kept = [q for q in result.questions if not keep or q['subject'].lower() in keep]
 
-            # Pass separated_content and exam_mode
-            subject_qs = service.run_full_pipeline(
-                job.file_path,
-                subjects_to_process=[subj],
-                separated_content=separated_content,
-                exam_mode=exam_mode
-            )
-            raw_questions.extend(subject_qs)
-        
-        # Save results...
-        for q_data in raw_questions:
+        # The pattern says which section (and so which question type) each number belongs to.
+        sections = list(job.pattern.sections.all()) if job.pattern else []
+        for q in kept:
+            q['section'] = next((sec for sec in sections
+                                 if map_subject(sec.subject, all_subjects).lower() == q['subject'].lower()
+                                 and isinstance(q['number'], int)
+                                 and sec.start_question <= q['number'] <= sec.end_question), None)
+            if q['section'] and q['section'].question_type != q['type']:
+                q['review'].append(f"pattern section '{q['section'].name}' expects {q['section'].question_type}, "
+                                   f"extracted as {q['type']}")
+        if not kept:
+            raise PaperExtractionError(
+                f'No questions for {", ".join(wanted) or "this pattern"} were found in the document '
+                f'({len(result.questions)} questions found in other subjects).')
+
+        for q in kept:
             ExtractedQuestion.objects.create(
                 job=job,
-                question_text=q_data.get('question_text') or q_data.get('question') or '',
-                question_type=q_data.get('question_type') or 'single_mcq',
-                options=q_data.get('options') or [],
-                correct_answer=q_data.get('correct_answer') or q_data.get('answer') or '',
-                solution=q_data.get('solution') or q_data.get('explanation') or '',
-                suggested_subject=q_data.get('subject') or '',
-                structure=q_data.get('subparts') or q_data.get('structure') or {},
-                images_data=q_data.get('images_data') or {},
-                confidence_score=q_data.get('confidence_score', 0.95)
+                question_text=q['stem'],
+                question_type=q['type'],
+                options=q['options'],
+                correct_answer=q['answer'],
+                solution='',
+                suggested_subject=q['subject'],
+                suggested_section_id=q['section'].id if q['section'] else None,
+                structure={},
+                images_data={},
+                confidence_score=0.5 if q['review'] else 0.95,
+                requires_review=bool(q['review']),
+                import_error='; '.join(q['review']),  # shown as the review reason in ExtractionV3/Review.tsx
             )
-            
-        job.status = 'completed'
-        job.progress_percent = 100
-        job.questions_extracted = len(raw_questions)
-        job.save()
-        
-        return {'success': True, 'count': len(raw_questions)}
-        
+
+        logger.info(
+            f"V3 extraction job {job.id}: {len(kept)}/{len(result.questions)} questions kept, "
+            f"{sum(1 for q in kept if q['review'])} flagged for review, model {result.model}, "
+            f"tokens {result.input_tokens}+{result.output_tokens}"
+        )
+        job.total_questions_found = len(result.questions)
+        job.questions_extracted = len(kept)
+        job.ai_model_used = result.model
+        job.tokens_used = result.input_tokens + result.output_tokens
+        job.save(update_fields=['total_questions_found', 'ai_model_used', 'tokens_used'])
+        job.processing_time_seconds = time.time() - started
+        job.mark_completed()
+        return {'success': True, 'count': len(kept), 'warnings': result.warnings}
+
     except Exception as e:
-        job.status = 'failed'
-        job.error_message = str(e)
-        job.save()
-        raise e
+        logger.error(f"V3 extraction job {job.id} failed: {e}", exc_info=not isinstance(e, PaperExtractionError))
+        job.processing_time_seconds = time.time() - started
+        job.mark_failed(str(e))
+        raise
 
 
 @shared_task(

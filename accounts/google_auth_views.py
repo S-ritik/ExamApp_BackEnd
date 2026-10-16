@@ -19,6 +19,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from django.db import transaction
 from .models import User, Institute
+from .subdomains import authorize_portal_login
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +128,9 @@ def google_login(request):
                 {'detail': 'Your account is disabled. Please contact support.'},
                 status=status.HTTP_403_FORBIDDEN,
             )
+        denied = authorize_portal_login(request, user)
+        if denied:
+            return denied
 
     # --- Device Session Management ---
     from .device_session_manager import DeviceSessionManager
@@ -234,7 +238,7 @@ def google_login(request):
                     'center_id': str(m.center_id) if m.center_id else None,
                     'center_name': m.center.name if m.center else None,
                 }
-                for m in user.memberships.filter(is_active=True).select_related('institute', 'center')
+                for m in user.memberships.filter(is_active=True).select_related('institute')  # center is in the tenant DB
             ],
         },
         'onboarding_required': onboarding_required,

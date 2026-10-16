@@ -1,122 +1,143 @@
 from django.utils.deprecation import MiddlewareMixin
+from django.http import JsonResponse
 from accounts.utils import set_current_db, clear_current_db
+from accounts.subdomains import (
+    subdomain_from_host, resolve_institute, user_belongs_to_institute,
+    is_platform_user, portal_access_denied_payload,
+)
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from django.conf import settings
 import logging
 
 logger = logging.getLogger(__name__)
 
-# The root domain — requests from here are the Platform Owner portal (no tenant)
-ROOT_DOMAIN = getattr(settings, 'ROOT_DOMAIN', 'exams.dashoapp.com')
-TIMETABLE_DOMAIN = getattr(settings, 'TIMETABLE_DOMAIN', 'timetable.dashoapp.com')
-DEV_HOSTS = {'localhost', '127.0.0.1', 'testserver'}
-
 
 class TenantMiddleware(MiddlewareMixin):
     """
-    Middleware that:
-    1. Extracts the subdomain from the request host and attaches the matching
-       Institute to request.institute / request.subdomain.
-       e.g. kiit.exams.dashoapp.com -> Institute(subdomain='kiit')
-    2. Sets the correct tenant database connection for the request thread
-       (existing DB-routing behaviour is fully preserved).
+    1. Resolves the institute from the request host (accounts/subdomains.py).
+       kiit.exams.dashoapp.com -> request.institute = Institute(subdomain='kiit').
+       A tenant-style host with no active institute behind it gets a 404 —
+       unknown subdomains never fall through to the generic portal.
+    2. On an institute subdomain, an authenticated user must belong to that
+       institute (403 otherwise) and the request is pinned to its database.
+    3. Elsewhere (root domain, localhost, ...), the user's own institute DB is
+       used; X-Institute-DB may switch to another DB only if the user is a
+       member of that institute (or a platform-level user).
     """
 
+    # Login/registration endpoints check the institute themselves (against
+    # request.institute). A stale token in the browser must not block them.
+    PUBLIC_AUTH_PATHS = (
+        '/api/auth/login',
+        '/api/auth/logout',
+        '/api/auth/register',
+        '/api/auth/token/refresh',
+        '/api/auth/google',
+        '/api/auth/institutes/by-subdomain/',
+        '/api/timetable/auth/',
+    )
+
     def process_request(self, request):
-        # Phase 1: Subdomain -> Institute resolution
+        set_current_db('default')
         request.institute = None
         request.subdomain = None
 
-        try:
-            host = request.get_host().split(':')[0].lower()
+        label = subdomain_from_host(request.get_host())
+        if label is not None:
+            institute = resolve_institute(label)
+            if institute is None:
+                logger.warning(f"[Tenant] Rejected request for unknown subdomain: '{label}'")
+                return JsonResponse({
+                    'detail': 'No institute portal exists at this address.',
+                    'code': 'unknown_subdomain',
+                }, status=404)
+            request.institute = institute
+            request.subdomain = institute.subdomain
 
-            if host not in DEV_HOSTS and host != ROOT_DOMAIN and host != TIMETABLE_DOMAIN:
-                if host.endswith('.' + ROOT_DOMAIN):
-                    subdomain = host.replace('.' + ROOT_DOMAIN, '').strip().lower()
-                    if subdomain:
-                        request.subdomain = subdomain
-                        from .models import Institute
-                        try:
-                            institute = Institute.objects.using('default').get(
-                                subdomain=subdomain, is_active=True
-                            )
-                            request.institute = institute
-                            logger.debug(
-                                f"[Tenant] Subdomain '{subdomain}' -> Institute: {institute.name}"
-                            )
-                        except Institute.DoesNotExist:
-                            logger.warning(
-                                f"[Tenant] No active institute for subdomain: '{subdomain}'"
-                            )
-        except Exception as e:
-            logger.error(f"[Tenant] Subdomain detection error: {e}")
+        user = self._get_user(request)
 
-        # Phase 2: DB routing (existing logic — unchanged)
+        if request.institute is not None:
+            if (user is not None
+                    and not request.path.startswith(self.PUBLIC_AUTH_PATHS)
+                    and not user_belongs_to_institute(user, request.institute)):
+                logger.warning(
+                    f"[Tenant] {user.email} denied on '{request.subdomain}' portal (not a member)"
+                )
+                return JsonResponse(portal_access_denied_payload(request.institute), status=403)
+            # The subdomain decides the tenant; X-Institute-DB is ignored here.
+            return self._activate(request.institute.db_name)
+
+        if user is None:
+            # Anonymous requests off-subdomain only ever see the shared DB.
+            return self._activate(None)
+
         requested_db = request.headers.get('X-Institute-DB')
-        tenant_db = None
+        if not requested_db:
+            return self._activate(user.institute.db_name if user.institute else None)
+        if self._may_use_db(user, requested_db):
+            return self._activate(requested_db)
 
-        # Identify the user (session or JWT)
-        user = getattr(request, 'user', None)
-        if not (user and user.is_authenticated):
-            try:
-                jwt_auth = JWTAuthentication()
-                header = jwt_auth.get_header(request)
-                if header:
-                    raw_token = jwt_auth.get_raw_token(header)
-                    validated_token = jwt_auth.get_validated_token(raw_token)
-                    user = jwt_auth.get_user(validated_token)
-            except Exception:
-                user = None
-
-        # Determine the correct tenant DB
-        if user and user.is_authenticated:
-            if requested_db:
-                from .models import Institute
-                try:
-                    target_institute = Institute.objects.using('default').get(db_name=requested_db)
-                    if user.role == 'super_admin':
-                        tenant_db = requested_db
-                    elif user.institute_id == target_institute.id:
-                        tenant_db = requested_db
-                    elif user.memberships.filter(institute=target_institute, is_active=True).exists():
-                        tenant_db = requested_db
-                    else:
-                        logger.warning(
-                            f"User {user.email} attempted to access unauthorized database: {requested_db}"
-                        )
-                        tenant_db = user.institute.db_name if user.institute else None
-                except Institute.DoesNotExist:
-                    logger.error(f"Requested database {requested_db} does not exist.")
-                    tenant_db = user.institute.db_name if user.institute else None
-            else:
-                # If the subdomain points to a specific institute, prefer that DB
-                if request.institute and request.institute.db_name:
-                    tenant_db = request.institute.db_name
-                elif user.institute and user.institute.db_name:
-                    tenant_db = user.institute.db_name
-        else:
-            tenant_db = requested_db
-
-        # Final DB selection
-        if not tenant_db or tenant_db == 'default':
-            set_current_db('default')
-            return None
-
-        if tenant_db not in settings.DATABASES:
-            from .models import Institute
-            try:
-                institute = Institute.objects.using('default').get(db_name=tenant_db)
-                from .database_utils import register_institute_database
-                register_institute_database(institute)
-            except Institute.DoesNotExist:
-                logger.error(f"Tenant database {tenant_db} requested but no such institute found.")
-                set_current_db('default')
-                return None
-
-        set_current_db(tenant_db)
-        return None
+        logger.warning(f"User {user.email} attempted to access unauthorized database: {requested_db}")
+        return JsonResponse({
+            'detail': 'You do not have access to this institute.',
+            'code': 'institute_access_denied',
+        }, status=403)
 
     def process_response(self, request, response):
         """Clear the thread-local storage on response."""
         clear_current_db()
         return response
+
+    @staticmethod
+    def _get_user(request):
+        """Authenticated user from the session or a valid JWT, else None."""
+        user = getattr(request, 'user', None)
+        if user is not None and user.is_authenticated:
+            return user
+        try:
+            jwt_auth = JWTAuthentication()
+            header = jwt_auth.get_header(request)
+            if header:
+                raw_token = jwt_auth.get_raw_token(header)
+                if raw_token:
+                    user = jwt_auth.get_user(jwt_auth.get_validated_token(raw_token))
+                    if user.is_authenticated and user.is_active:
+                        return user
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _may_use_db(user, db_name):
+        from .models import Institute
+        if is_platform_user(user):
+            return db_name == 'default' or Institute.objects.using('default').filter(db_name=db_name).exists()
+        if db_name == 'default':
+            # The shared DB also holds data of institutes without their own DB.
+            return not (user.institute and user.institute.db_name)
+        target = Institute.objects.using('default').filter(db_name=db_name).first()
+        return target is not None and user_belongs_to_institute(user, target)
+
+    @staticmethod
+    def _activate(tenant_db):
+        activate_tenant_db(tenant_db)
+        return None
+
+
+def activate_tenant_db(tenant_db):
+    """Route this thread's tenant-model queries to `tenant_db` (None/'default' = shared DB)."""
+    if not tenant_db or tenant_db == 'default':
+        set_current_db('default')
+        return
+
+    if tenant_db not in settings.DATABASES:
+        from .models import Institute
+        institute = Institute.objects.using('default').filter(db_name=tenant_db).first()
+        if institute is None:
+            logger.error(f"Tenant database {tenant_db} requested but no such institute found.")
+            set_current_db('default')
+            return
+        from .database_utils import register_institute_database
+        register_institute_database(institute)
+
+    set_current_db(tenant_db)
