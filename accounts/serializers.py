@@ -5,6 +5,37 @@ from django.utils import timezone
 from datetime import timedelta
 from .models import User, Institute, UserPermission, InstituteSettings, InstituteInvitation, DeviceSession, ActivityLog
 from .utils import generate_user_code, generate_password, send_credentials_email
+from .subdomains import normalize_subdomain, validate_subdomain, subdomain_is_taken, is_platform_user
+from .access import can_change_role, can_access_institute
+
+
+class UniqueSubdomainValidator:
+    """Case-insensitive uniqueness, excluding the institute being edited."""
+    requires_context = True
+
+    def __call__(self, value, serializer_field):
+        instance = getattr(serializer_field.parent, 'instance', None)
+        if subdomain_is_taken(value, exclude_pk=getattr(instance, 'pk', None)):
+            raise serializers.ValidationError('This subdomain is already taken.', code='unique')
+
+
+class SubdomainField(serializers.CharField):
+    """
+    Optional institute subdomain. Input is trimmed and lowercased; blank or
+    null clears it (stored as NULL, so many institutes can have none).
+    """
+
+    def __init__(self, **kwargs):
+        kwargs.setdefault('required', False)
+        kwargs.setdefault('allow_null', True)
+        kwargs.setdefault('allow_blank', True)
+        kwargs.setdefault('validators', [validate_subdomain, UniqueSubdomainValidator()])
+        super().__init__(**kwargs)
+
+    def run_validation(self, data=serializers.empty):
+        if isinstance(data, str):
+            data = normalize_subdomain(data)
+        return super().run_validation(data)
 
 
 class InstituteSerializer(serializers.ModelSerializer):
@@ -20,7 +51,9 @@ class InstituteSerializer(serializers.ModelSerializer):
             'created_by', 'created_by_name', 'user_count', 'active_user_count',
             'created_at', 'updated_at'
         ]
-        read_only_fields = ['id', 'created_at', 'updated_at', 'user_count', 'active_user_count', 'created_by_name']
+        # Subdomains are assigned by the platform owner (platform_serializers),
+        # not by institute admins, so a tenant cannot claim or change one here.
+        read_only_fields = ['id', 'subdomain', 'created_at', 'updated_at', 'user_count', 'active_user_count', 'created_by_name']
     
     def get_user_count(self, obj):
         return obj.get_user_count()
@@ -280,6 +313,33 @@ class UserSerializer(serializers.ModelSerializer):
         ret['center_id'] = self.get_center_id(instance)
         ret['center_name'] = self.get_center_name(instance)
         return ret
+
+    def validate(self, attrs):
+        # Role and account-status changes need a sufficiently senior actor:
+        # without this, anyone could PATCH their own profile to super_admin.
+        request = self.context.get('request')
+        actor = getattr(request, 'user', None)
+        target = self.instance
+        if target is not None and actor is not None and actor.is_authenticated:
+            new_role = attrs.get('role')
+            if new_role is not None and new_role.lower() != (target.role or '').lower():
+                if not can_change_role(actor, target, new_role):
+                    raise serializers.ValidationError({'role': 'You cannot change this role.'})
+            for flag in ('is_active', 'is_verified'):
+                if flag in attrs and attrs[flag] != getattr(target, flag):
+                    if actor.pk == target.pk and not is_platform_user(actor):
+                        raise serializers.ValidationError({flag: 'You cannot change this on your own account.'})
+            # A center decides which center an admin manages: it must belong to
+            # the user's institute (and one the actor may manage).
+            center_id = attrs.get('center_id')
+            if center_id and str(center_id) != str(target.center_id or ''):
+                from .models import Center
+                center_institute = Center.objects.filter(pk=center_id).values_list('institute_id', flat=True).first()
+                if (center_institute is None
+                        or not can_access_institute(actor, center_institute, write=True)
+                        or (target.institute_id and center_institute != target.institute_id)):
+                    raise serializers.ValidationError({'center_id': 'This center is not part of the institute.'})
+        return attrs
 
     def update(self, instance, validated_data):
         """Allow updating center_id directly"""

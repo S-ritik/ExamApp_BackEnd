@@ -1,7 +1,10 @@
 from django.contrib.auth.models import AbstractUser
 from django.db import models
 from django.core.validators import RegexValidator
+from django.db.models.functions import Lower
 import uuid
+
+from .subdomains import normalize_subdomain, validate_subdomain
 
 
 class TimeStampedModel(models.Model):
@@ -33,7 +36,9 @@ class Institute(models.Model):
     
     # Basic fields from exam system
     name = models.CharField(max_length=255, unique=True)
-    subdomain = models.CharField(max_length=100, unique=True, blank=True, null=True, help_text="Subdomain slug for this institute (e.g., 'iitmadras' for iitmadras.exams.dashoapp.com)")
+    # Optional: institutes without a subdomain use the root portal. Stored
+    # lowercase; NULL (never '') means "no subdomain". See accounts/subdomains.py.
+    subdomain = models.CharField(max_length=63, unique=True, blank=True, null=True, validators=[validate_subdomain], help_text="Subdomain slug for this institute (e.g., 'iitmadras' for iitmadras.exams.dashoapp.com)")
     domain = models.CharField(max_length=100, unique=True, blank=True, null=True, help_text="Optional email domain (e.g., 'university.edu')")
     description = models.TextField(blank=True, null=True, help_text="Brief description of the institute")
     address = models.TextField(blank=True, null=True)
@@ -66,9 +71,19 @@ class Institute(models.Model):
 
     class Meta:
         ordering = ['name']
+        constraints = [
+            models.CheckConstraint(
+                check=~models.Q(subdomain='') & models.Q(subdomain=Lower('subdomain')),
+                name='institute_subdomain_normalized',
+            ),
+        ]
 
     def __str__(self):
         return self.name
+
+    def save(self, *args, **kwargs):
+        self.subdomain = normalize_subdomain(self.subdomain)
+        super().save(*args, **kwargs)
     
     def get_user_count(self):
         """Get the number of users in this institute"""
@@ -263,7 +278,8 @@ class User(AbstractUser):
     
     def get_role_in_institute(self, institute):
         """Get the user's role in a specific institute"""
-        if self.role == self.ROLE_SUPER_ADMIN:
+        # super_admin owns its primary institute only, not every institute
+        if self.role == self.ROLE_SUPER_ADMIN and self.institute_id == getattr(institute, 'pk', institute):
             return self.ROLE_SUPER_ADMIN
             
         membership = self.memberships.filter(institute=institute, is_active=True).first()
@@ -311,7 +327,8 @@ class UserInstituteMembership(models.Model):
     
     # Institute-specific profile data
     teacher_code = models.CharField(max_length=50, blank=True, null=True)
-    center = models.ForeignKey('Center', on_delete=models.SET_NULL, null=True, blank=True)
+    # Center lives in the institute's tenant DB; memberships live in the shared DB
+    center = models.ForeignKey('Center', on_delete=models.SET_NULL, null=True, blank=True, db_constraint=False)
     
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)

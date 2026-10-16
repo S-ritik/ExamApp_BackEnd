@@ -20,6 +20,8 @@ from .serializers import (
     ActivityLogSerializer, UserCreationSerializer
 )
 from .jwt_utils import get_tokens_for_user
+from .subdomains import authorize_portal_login, normalize_subdomain, resolve_institute, PLATFORM_ROLES, is_platform_user
+from .access import institute_ids_for, can_access_institute, can_assign_role
 from rest_framework.exceptions import PermissionDenied
 
 
@@ -136,24 +138,12 @@ def user_login_view(request):
             'detail': 'Invalid credentials.'
         }, status=status.HTTP_401_UNAUTHORIZED)
     
-    # --- SUBDOMAIN ACCESS RESTRICTION ---
-    # If the request is coming from a subdomain, ensure the user belongs to this institute
-    request_subdomain = getattr(request, 'subdomain', None)
-    if request_subdomain:
-        # User must either have this as their primary institute
-        # OR have a membership in this institute
-        is_member = False
-        if user.institute and user.institute.subdomain == request_subdomain:
-            is_member = True
-        elif user.memberships.filter(institute__subdomain=request_subdomain, is_active=True).exists():
-            is_member = True
-        
-        if not is_member:
-            return Response({
-                'detail': f'Your account does not have access to the {request_subdomain} portal.'
-            }, status=status.HTTP_403_FORBIDDEN)
-    # ------------------------------------
-    
+    # On an institute subdomain, only that institute's accounts may sign in.
+    # Also selects the user's tenant DB for the rest of this request.
+    denied = authorize_portal_login(request, user)
+    if denied:
+        return denied
+
     # Check if user is active
     if not user.is_active:
         return Response({
@@ -262,7 +252,7 @@ def user_login_view(request):
                     'teacher_code': m.teacher_code,
                     'center_id': str(m.center_id) if m.center_id else None,
                     'center_name': m.center.name if m.center else None,
-                } for m in user.memberships.filter(is_active=True).select_related('institute', 'center')
+                } for m in user.memberships.filter(is_active=True).select_related('institute')  # center is in the tenant DB
             ]
         },
         'message': 'Login successful'
@@ -401,33 +391,34 @@ class ChangePasswordView(generics.GenericAPIView):
         })
 
 
+def _visible_institutes(user):
+    """Platform users see every institute; everyone else only their own ones."""
+    allowed = institute_ids_for(user)
+    if allowed is None:
+        return Institute.objects.all()
+    return Institute.objects.filter(id__in=allowed)
+
+
 class InstituteListCreateView(generics.ListCreateAPIView):
-    """List all active institutes and create new institutes"""
-    queryset = Institute.objects.all()
-    permission_classes = [permissions.AllowAny]
+    """List the institutes the user can see and create new institutes"""
+    permission_classes = [permissions.IsAuthenticated]
     
     def get_queryset(self):
-        user = self.request.user
-        if user.is_authenticated and (getattr(user, 'role', '') or '').lower() in ['manager', 'platform_owner', 'super_admin']:
-            return Institute.objects.all()
-        return Institute.objects.filter(is_active=True)
+        return _visible_institutes(self.request.user)
     
     def get_serializer_class(self):
         if self.request.method == 'POST':
             return InstituteCreateSerializer
         return InstituteSerializer
-    
-    def get_permissions(self):
-        if self.request.method == 'POST':
-            return [permissions.IsAuthenticated()]
-        return [permissions.AllowAny()]
 
 
 class InstituteDetailView(generics.RetrieveAPIView):
     """Get institute details"""
-    queryset = Institute.objects.all()
     serializer_class = InstituteSerializer
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return _visible_institutes(self.request.user)
 
 
 class UserListView(generics.ListCreateAPIView):
@@ -442,13 +433,18 @@ class UserListView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         user = self.request.user
-        # Priority: User's assigned institute (strict) > Query parameter (filter)
-        eff_institute_id = getattr(user, 'institute_id', None) or self.request.query_params.get('institute_id')
+        # Platform users may pick any institute; everyone else is held to their own
+        if is_platform_user(user):
+            eff_institute_id = self.request.query_params.get('institute_id') or user.institute_id
+        else:
+            eff_institute_id = user.institute_id
         
         center_id = self.request.query_params.get('center_id')
         
         user_role = (user.role or '').lower()
         if user_role in ['super_admin', 'superadmin', 'manager', 'platform_owner']:
+            if not eff_institute_id and not is_platform_user(user):
+                return User.objects.none()
             queryset = User.objects.all()
             if eff_institute_id:
                 queryset = queryset.filter(institute_id=eff_institute_id)
@@ -479,11 +475,17 @@ class UserListView(generics.ListCreateAPIView):
         if user_role not in ['super_admin', 'superadmin', 'institute_admin', 'exam_admin', 'admin', 'manager', 'platform_owner']:
              raise PermissionDenied("You do not have permission to create users.")
 
-        # For institute admins, force the institute_id
-        if user.role in ['institute_admin', 'exam_admin'] and user.institute:
-             serializer.save(institute_id=user.institute.id)
+        requested_role = serializer.validated_data.get('role') or 'student'
+        if not can_assign_role(user, requested_role):
+            raise PermissionDenied(f"You cannot create users with the role '{requested_role}'.")
+
+        if is_platform_user(user):
+            serializer.save()
+        elif user.institute_id:
+            # Everyone else creates users in their own institute only
+            serializer.save(institute_id=user.institute_id)
         else:
-             serializer.save()
+            raise PermissionDenied("You must belong to an institute to create users.")
 
 
 class UserDetailView(generics.RetrieveUpdateDestroyAPIView):
@@ -493,11 +495,8 @@ class UserDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     def get_queryset(self):
         user = self.request.user
-        # Priority: User's assigned institute (strict) > Query parameter (filter)
-        eff_institute_id = getattr(user, 'institute_id', None) or self.request.query_params.get('institute_id')
-        user_role = (user.role or '').lower()
-        
-        if user_role in ['super_admin', 'superadmin', 'manager', 'platform_owner']:
+        if is_platform_user(user):
+            eff_institute_id = self.request.query_params.get('institute_id')
             if eff_institute_id:
                 return User.objects.filter(institute_id=eff_institute_id)
             return User.objects.all()
@@ -511,8 +510,9 @@ class UserDetailView(generics.RetrieveUpdateDestroyAPIView):
         instance = serializer.instance
         actor_role = (actor.role or '').lower()
 
-        # Allow super admins and managers to update anyone
-        if actor_role in ['super_admin', 'superadmin', 'manager', 'platform_owner']:
+        # Platform users may update anyone; super admins fall through to the
+        # same-institute rule below (super_admin counts as an institute admin)
+        if is_platform_user(actor):
             serializer.save()
             return
 
@@ -531,8 +531,8 @@ class UserDetailView(generics.RetrieveUpdateDestroyAPIView):
         actor = self.request.user
         actor_role = (actor.role or '').lower()
 
-        # Allow super admins and managers to delete anyone
-        if actor_role in ['super_admin', 'superadmin', 'manager', 'platform_owner']:
+        # Platform users may delete anyone; super admins only within their institute
+        if is_platform_user(actor):
             instance.delete()
             return
 
@@ -634,13 +634,26 @@ class InstituteUserListView(generics.ListAPIView):
     def get_queryset(self):
         user = self.request.user
         institute_id = self.kwargs.get('institute_id')
+        role = (user.role or '').lower()
         
-        if user.role in ['super_admin', 'SUPER_ADMIN']:
+        if role in PLATFORM_ROLES:
             return User.objects.filter(institute_id=institute_id)
-        elif user.role in ['institute_admin', 'exam_admin'] and user.institute_id == institute_id:
+        # super_admin is the owner of ONE institute, not a cross-institute role
+        if role in INSTITUTE_ADMIN_ROLES and user.institute_id == institute_id:
             return User.objects.filter(institute_id=institute_id)
-        else:
-            return User.objects.none()
+        return User.objects.none()
+
+
+INSTITUTE_ADMIN_ROLES = ('super_admin', 'institute_admin', 'exam_admin')
+
+
+def _invitations_visible_to(user):
+    role = (user.role or '').lower()
+    if role in PLATFORM_ROLES:
+        return InstituteInvitation.objects.all()
+    if role in INSTITUTE_ADMIN_ROLES and user.institute_id:
+        return InstituteInvitation.objects.filter(institute_id=user.institute_id)
+    return InstituteInvitation.objects.none()
 
 
 class InstituteInvitationListView(generics.ListCreateAPIView):
@@ -649,19 +662,18 @@ class InstituteInvitationListView(generics.ListCreateAPIView):
     permission_classes = [permissions.IsAuthenticated]
     
     def get_queryset(self):
-        user = self.request.user
-        if user.role in ['super_admin', 'SUPER_ADMIN']:
-            return InstituteInvitation.objects.all()
-        elif user.role in ['institute_admin', 'exam_admin']:
-            return InstituteInvitation.objects.filter(institute=user.institute)
-        else:
-            return InstituteInvitation.objects.none()
+        return _invitations_visible_to(self.request.user)
     
     def perform_create(self, serializer):
         user = self.request.user
-        if user.role not in ['super_admin', 'institute_admin', 'exam_admin']:
-            raise permissions.PermissionDenied("You don't have permission to send invitations.")
-        serializer.save()
+        role = (user.role or '').lower()
+        if role in PLATFORM_ROLES:
+            serializer.save()
+        elif role in INSTITUTE_ADMIN_ROLES and user.institute_id:
+            # Admins can only invite into their own institute
+            serializer.save(institute=user.institute)
+        else:
+            raise PermissionDenied("You don't have permission to send invitations.")
 
 
 class InstituteInvitationDetailView(generics.RetrieveUpdateDestroyAPIView):
@@ -670,13 +682,7 @@ class InstituteInvitationDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [permissions.IsAuthenticated]
     
     def get_queryset(self):
-        user = self.request.user
-        if user.role in ['super_admin', 'SUPER_ADMIN']:
-            return InstituteInvitation.objects.all()
-        elif user.role in ['institute_admin', 'exam_admin']:
-            return InstituteInvitation.objects.filter(institute=user.institute)
-        else:
-            return InstituteInvitation.objects.none()
+        return _invitations_visible_to(self.request.user)
 
 
 @api_view(['POST'])
@@ -827,7 +833,7 @@ def admin_reset_password(request, pk):
     actor = request.user
     
     # Check permissions
-    if not actor.is_institute_admin() and actor.role not in ['super_admin', 'SUPER_ADMIN']:
+    if not actor.is_institute_admin() and not is_platform_user(actor):
         return Response({
             'error': 'You do not have permission to reset passwords.'
         }, status=status.HTTP_403_FORBIDDEN)
@@ -839,8 +845,8 @@ def admin_reset_password(request, pk):
             'error': 'User not found.'
         }, status=status.HTTP_404_NOT_FOUND)
     
-    # Check if advisor (admin) is in the same institute
-    if actor.role not in ['super_admin', 'SUPER_ADMIN'] and user.institute != actor.institute:
+    # Only platform users may reset passwords outside their own institute
+    if not is_platform_user(actor) and not can_access_institute(actor, user.institute_id, write=True):
         return Response({
             'error': 'You can only reset passwords for users in your institute.'
         }, status=status.HTTP_403_FORBIDDEN)
@@ -885,14 +891,11 @@ def get_institute_by_subdomain(request, subdomain):
     Retrieve details of an institute by its subdomain.
     Publicly accessible to display logo and name on the login page.
     """
-    try:
-        institute = Institute.objects.using('default').get(subdomain__iexact=subdomain, is_active=True)
-    except Institute.DoesNotExist:
-        all_institutes = list(Institute.objects.using('default').values('id', 'name', 'subdomain', 'is_active'))
+    institute = resolve_institute(normalize_subdomain(subdomain))
+    if institute is None:
         return Response({
             'detail': 'Institute not found.',
-            'requested_subdomain': subdomain,
-            'debug_all_institutes': all_institutes
+            'code': 'unknown_subdomain',
         }, status=status.HTTP_404_NOT_FOUND)
     
     return Response({

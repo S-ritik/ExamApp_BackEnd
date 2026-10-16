@@ -8,6 +8,7 @@ from django.db.models import Q, Count, Avg, Sum, Value
 from django.db.models.functions import Concat
 from django.contrib.auth import get_user_model
 from accounts.models import User as AccountsUser
+from accounts.subdomains import is_platform_user
 from django.conf import settings
 from django.core.files.base import ContentFile
 from django.shortcuts import get_object_or_404
@@ -1252,9 +1253,10 @@ def get_proctoring_snapshots(request, attempt_id):
     if user.role in ['student', 'STUDENT'] and attempt.student != user:
         return Response({'error': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
     
-    # Check if user has admin access to this exam (Superadmins see everything)
-    is_super_admin = user.role.lower() == 'superadmin' or user.role.lower() == 'admin'
-    if not is_super_admin and user.role not in ['student', 'STUDENT'] and attempt.exam.institute != user.institute:
+    # Staff only see attempts of their own institute (only platform users see all).
+    # Previously any center admin ('admin') of any institute could open these.
+    if (not is_platform_user(user) and user.role not in ['student', 'STUDENT']
+            and attempt.exam.institute_id != user.institute_id):
         return Response({'error': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
     
     # Get new snapshots from ProctoringSnapshot model (PRIMARY STORAGE)
@@ -2878,10 +2880,9 @@ def exam_results_dashboard(request, exam_id):
     if not user.can_manage_exams():
         return Response({'error': 'Access denied'}, status=status.HTTP_403_FORBIDDEN)
     
-    # Super admins can access exams from any institute
-    if user.role not in ['super_admin', 'SUPER_ADMIN']:
-        # Non-super admins are restricted to their own institute
-        if exam.institute != user.institute:
+    # Only platform users can access exams from any institute
+    if not is_platform_user(user):
+        if exam.institute_id != user.institute_id:
             return Response({'error': 'Access denied'}, status=status.HTTP_403_FORBIDDEN)
     
     # Get query parameters
@@ -3157,8 +3158,8 @@ def admin_dashboard_data(request):
         
         # Handle super admin or users without institute
         if not institute:
-            # Super admin can see all data across all institutes
-            if user.role in ['super_admin', 'SUPER_ADMIN']:
+            # Platform users can see all data across all institutes
+            if is_platform_user(user):
                 # Return aggregated data for all institutes
                 total_exams = Exam.objects.all().count()
                 active_exams = Exam.objects.filter(status='active').count()
@@ -3341,6 +3342,15 @@ def public_exam_details(request, token):
     })
 
 
+def _is_public_guest(user):
+    """Guest student record created by public_exam_access ('temp_' username, no usable password)."""
+    return (
+        (user.role or '').lower() == 'student'
+        and (user.username or '').startswith('temp_')
+        and not user.has_usable_password()
+    )
+
+
 @api_view(['POST'])
 @permission_classes([permissions.AllowAny])
 @throttle_classes([PublicAccessAnonRateThrottle])
@@ -3431,6 +3441,16 @@ def public_exam_access(request):
     existing_user = User.objects.filter(email=email).first()
 
     if existing_user:
+        # Only passwordless guest records (created by this endpoint) may be
+        # reused. Anyone else must sign in normally: handing out tokens for a
+        # real account here would let anyone with the link and an email
+        # address take over that account and move it between institutes.
+        if not _is_public_guest(existing_user):
+            return deny(
+                'This email belongs to a registered account. Please sign in to take this exam.',
+                'registered_account',
+                status.HTTP_409_CONFLICT,
+            )
         user = existing_user
         if existing_user.institute_id != exam.institute_id:
             existing_user.institute = exam.institute
@@ -3453,6 +3473,12 @@ def public_exam_access(request):
         except IntegrityError:
             # Email was created concurrently or belongs to another institute. Reuse existing record.
             user = User.objects.get(email=email)
+            if not _is_public_guest(user):
+                return deny(
+                    'This email belongs to a registered account. Please sign in to take this exam.',
+                    'registered_account',
+                    status.HTTP_409_CONFLICT,
+                )
             if user.institute_id != exam.institute_id:
                 user.institute = exam.institute
                 user.save(update_fields=['institute'])

@@ -13,6 +13,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from .models import User
+from .subdomains import authorize_portal_login
 from .device_session_manager import DeviceSessionManager
 from exam_flow_backend.throttling import LoginAnonRateThrottle, LoginUserRateThrottle
 
@@ -136,6 +137,10 @@ class BaseRoleLoginView(APIView):
                     status=status.HTTP_403_FORBIDDEN,
                 )
 
+        denied = authorize_portal_login(request, user)
+        if denied:
+            return denied
+
         # Check for device conflicts (unless force_switch is True)
         try:
             device_manager = DeviceSessionManager()
@@ -195,7 +200,7 @@ class BaseRoleLoginView(APIView):
                         "teacher_code": m.teacher_code,
                         "center_id": str(m.center_id) if m.center_id else None,
                         "center_name": m.center.name if m.center else None,
-                    } for m in user.memberships.filter(is_active=True).select_related('institute', 'center')
+                    } for m in user.memberships.filter(is_active=True).select_related('institute')  # center is in the tenant DB
                 ]
             },
         }

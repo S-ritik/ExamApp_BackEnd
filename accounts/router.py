@@ -7,7 +7,9 @@ class InstituteRouter:
     
     # Models that should always stay in the 'default' (shared) database
     SHARED_MODELS = {
-        'accounts': ['institute', 'user', 'devicesession', 'activitylog'],
+        # userinstitutemembership links two shared models, so it is shared too;
+        # its center FK points into the tenant DB (db_constraint=False).
+        'accounts': ['institute', 'user', 'userinstitutemembership', 'devicesession', 'activitylog'],
         'contenttypes': None, # All models in this app
         'auth': None,        # All models in this app
         'sessions': None,    # All models in this app

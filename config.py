@@ -49,6 +49,11 @@ GEMINI_MODEL = get_config('GEMINI_MODEL', default='gemini-2.5-flash')
 GEMINI_TEMPERATURE = get_config('GEMINI_TEMPERATURE', default='0.7', cast=float)
 GEMINI_TOP_P = get_config('GEMINI_TOP_P', default='0.95', cast=float)
 GEMINI_MAX_TOKENS = get_config('GEMINI_MAX_TOKENS', default='8192', cast=int)
+# Question-paper extraction (questions/services/paper_extraction.py). Flash-Lite + 'low' thinking was the cheapest
+# reliable setting in the Oct 2026 benchmark ('minimal' dropped questions). For fewer review flags at ~1.5x cost,
+# use EXTRACTION_GEMINI_MODEL=gemini-3.6-flash with EXTRACTION_GEMINI_THINKING_LEVEL=minimal.
+EXTRACTION_GEMINI_MODEL = get_config('EXTRACTION_GEMINI_MODEL', default='gemini-3.1-flash-lite')
+EXTRACTION_GEMINI_THINKING_LEVEL = get_config('EXTRACTION_GEMINI_THINKING_LEVEL', default='low')
 
 # Azure OpenAI Configuration
 AZURE_OPENAI_API_KEY = get_config('AZURE_OPENAI_API_KEY', default='')

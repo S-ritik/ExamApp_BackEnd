@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from .models import Institute, User
+from .serializers import SubdomainField
 
 class PlatformInstituteSerializer(serializers.ModelSerializer):
     """
@@ -9,6 +10,7 @@ class PlatformInstituteSerializer(serializers.ModelSerializer):
     user_count = serializers.IntegerField(source='get_user_count', read_only=True)
     active_user_count = serializers.IntegerField(source='get_active_user_count', read_only=True)
     center_count = serializers.IntegerField(source='centers.count', read_only=True)
+    subdomain = SubdomainField(max_length=63)
 
     class Meta:
         model = Institute
@@ -37,7 +39,7 @@ class CreateInstituteWithAdminSerializer(serializers.Serializer):
     """
     # Institute details
     name = serializers.CharField(max_length=255)
-    subdomain = serializers.SlugField(max_length=100, required=False, allow_blank=True, help_text="URL-safe slug, e.g. 'iitmadras'")
+    subdomain = SubdomainField(max_length=63, help_text="Optional, e.g. 'iitmadras' for iitmadras.exams.dashoapp.com")
     domain = serializers.CharField(max_length=100, required=False, allow_blank=True)
     contact_email = serializers.EmailField()
     
