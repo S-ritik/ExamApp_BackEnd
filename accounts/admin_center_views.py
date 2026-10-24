@@ -22,10 +22,10 @@ def assign_center_to_admin(request):
     """
     user = request.user
     
-    # Check if user is super admin or manager
-    if (user.role or '').lower() not in ['super_admin', 'superadmin', 'manager', 'platform_owner']:
+    # Check if user is super admin, platform owner, or manager
+    if (user.role or '').lower() not in ['super_admin', 'superadmin', 'platform_owner', 'manager']:
         return Response(
-            {'error': 'Only super admins or managers can assign centers to admins'},
+            {'error': 'Only super admins or platform owners can assign centers to admins'},
             status=status.HTTP_403_FORBIDDEN
         )
     
@@ -117,10 +117,10 @@ def remove_center_from_admin(request):
     """
     user = request.user
     
-    # Check if user is super admin or manager
-    if (user.role or '').lower() not in ['super_admin', 'superadmin', 'manager', 'platform_owner']:
+    # Check if user is super admin, platform owner, or manager
+    if (user.role or '').lower() not in ['super_admin', 'superadmin', 'platform_owner', 'manager']:
         return Response(
-            {'error': 'Only super admins or managers can remove center assignments'},
+            {'error': 'Only super admins or platform owners can remove center assignments'},
             status=status.HTTP_403_FORBIDDEN
         )
     

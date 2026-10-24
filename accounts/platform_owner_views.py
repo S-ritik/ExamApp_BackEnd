@@ -3,14 +3,16 @@ from rest_framework.response import Response
 from rest_framework.decorators import api_view, permission_classes
 from django.db import IntegrityError, transaction
 from .models import Institute, User
+from .subdomains import is_platform_user
 from .platform_serializers import PlatformInstituteSerializer, CreateInstituteWithAdminSerializer, PlatformUserSerializer
 
 class IsPlatformOwner(permissions.BasePermission):
     """
-    Custom permission to only allow platform owners.
+    Platform-level staff only: platform owners and managers (same access).
+    Platform-level staff only: platform owners.
     """
     def has_permission(self, request, view):
-        return bool(request.user and request.user.is_authenticated and request.user.role == 'platform_owner')
+        return bool(request.user and request.user.is_authenticated and is_platform_user(request.user))
 
 class PlatformInstituteListView(generics.ListAPIView):
     """

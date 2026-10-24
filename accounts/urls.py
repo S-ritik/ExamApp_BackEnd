@@ -11,6 +11,7 @@ from .timetable_auth_views import (
     StudentLoginView,
     StaffLoginView,
     ManagerLoginView,
+    PlatformOwnerLoginView,
     change_password as timetable_change_password,
 )
 from .device_session_views import (
@@ -45,6 +46,7 @@ urlpatterns = [
     path('teacher/login/', TeacherLoginView.as_view(), name='exam-teacher-login'),
     path('student/login/', StudentLoginView.as_view(), name='exam-student-login'),
     path('staff/login/', StaffLoginView.as_view(), name='exam-staff-login'),
+    path('platform-owner/login/', PlatformOwnerLoginView.as_view(), name='exam-platform-owner-login'),
     path('manager/login/', ManagerLoginView.as_view(), name='exam-manager-login'),
     path('auth/change-password/', timetable_change_password, name='exam-change-password'),
     

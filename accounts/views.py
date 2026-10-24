@@ -5,7 +5,7 @@ from exam_flow_backend.throttling import LoginAnonRateThrottle, LoginUserRateThr
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import login, logout
 from django.contrib.auth.hashers import make_password
-from django.db import transaction, models
+from django.db import transaction, models, IntegrityError
 from django.db.models import Q
 from django.utils import timezone
 from django.core.mail import send_mail
@@ -50,20 +50,27 @@ def user_registration_view(request):
     serializer = UserRegistrationSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
 
-    with transaction.atomic():
-        user = serializer.save()
+    try:
+        with transaction.atomic():
+            user = serializer.save()
 
-        # Log activity
-        from .utils import log_activity
-        log_activity(
-            institute=user.institute,
-            log_type='user',
-            title='New User Registered',
-            description=f'User {user.get_full_name()} ({user.email}) registered as {user.role}.',
-            user=user,
-            status='success',
-            request=request
-        ) if user.institute else None
+            # Log activity
+            from .utils import log_activity
+            log_activity(
+                institute=user.institute,
+                log_type='user',
+                title='New User Registered',
+                description=f'User {user.get_full_name()} ({user.email}) registered as {user.role}.',
+                user=user,
+                status='success',
+                request=request
+            ) if user.institute else None
+    except IntegrityError as e:
+        return Response({
+            'detail': 'A user with these details already exists or invalid reference provided.',
+            'code': 'integrity_error',
+            'error': str(e)
+        }, status=status.HTTP_400_BAD_REQUEST)
 
     # Send credentials email outside transaction so email failure doesn't rollback user creation
     try:
@@ -442,7 +449,7 @@ class UserListView(generics.ListCreateAPIView):
         center_id = self.request.query_params.get('center_id')
         
         user_role = (user.role or '').lower()
-        if user_role in ['super_admin', 'superadmin', 'manager', 'platform_owner']:
+        if user_role in ['super_admin', 'superadmin', 'platform_owner', 'manager']:
             if not eff_institute_id and not is_platform_user(user):
                 return User.objects.none()
             queryset = User.objects.all()
@@ -472,7 +479,7 @@ class UserListView(generics.ListCreateAPIView):
         user_role = (user.role or '').lower()
         
         # Check permissions
-        if user_role not in ['super_admin', 'superadmin', 'institute_admin', 'exam_admin', 'admin', 'manager', 'platform_owner']:
+        if user_role not in ['super_admin', 'superadmin', 'institute_admin', 'exam_admin', 'admin', 'platform_owner', 'manager']:
              raise PermissionDenied("You do not have permission to create users.")
 
         requested_role = serializer.validated_data.get('role') or 'student'

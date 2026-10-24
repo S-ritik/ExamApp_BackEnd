@@ -106,8 +106,8 @@ class BaseRoleLoginView(APIView):
         if self.allowed_roles:
             # Map roles for compatibility
             role_mapping = {
-                'super_admin': ['super_admin', 'SUPER_ADMIN', 'manager'],
-                'SUPER_ADMIN': ['super_admin', 'SUPER_ADMIN', 'manager'],
+                'super_admin': ['super_admin', 'SUPER_ADMIN', 'platform_owner', 'manager'],
+                'SUPER_ADMIN': ['super_admin', 'SUPER_ADMIN', 'platform_owner', 'manager'],
                 'ADMIN': ['ADMIN', 'admin', 'institute_admin', 'super_admin', 'SUPER_ADMIN'],
                 'admin': ['ADMIN', 'admin', 'institute_admin', 'super_admin', 'SUPER_ADMIN'],
                 'institute_admin': ['ADMIN', 'admin', 'institute_admin', 'super_admin', 'SUPER_ADMIN'],
@@ -117,8 +117,9 @@ class BaseRoleLoginView(APIView):
                 'student': ['STUDENT', 'student'],
                 'STAFF': ['STAFF', 'staff'],
                 'staff': ['STAFF', 'staff'],
-                'manager': ['manager', 'super_admin', 'SUPER_ADMIN', 'platform_owner'],
                 'platform_owner': ['platform_owner', 'manager'],
+                # Backward compatibility for any remaining frontend references
+                'manager': ['platform_owner', 'manager'],
             }
             
             user_allowed = False
@@ -252,12 +253,19 @@ class StaffLoginView(BaseRoleLoginView):
     allowed_roles = ('staff',)
 
 
-class ManagerLoginView(BaseRoleLoginView):
+class PlatformOwnerLoginView(BaseRoleLoginView):
     """
-    Manager login - Company level management.
+    Platform Owner login - Platform level management.
     Has access to all features across all institutes.
     """
-    allowed_roles = ('manager', 'super_admin', 'platform_owner')
+    allowed_roles = ('platform_owner', 'manager')
+
+
+class ManagerLoginView(BaseRoleLoginView):
+    """
+    Manager login - Alias for Platform Owner for backward compatibility.
+    """
+    allowed_roles = ('platform_owner', 'manager')
 
 
 @api_view(["POST"])

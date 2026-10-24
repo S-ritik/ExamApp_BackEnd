@@ -187,7 +187,7 @@ class SubdomainRoutingTests(PortalFixtureMixin, TestCase):
     def test_root_and_www_are_not_tenants(self):
         for h in [ROOT, f'www.{ROOT}', 'localhost']:
             with self.subTest(host=h):
-                res = self.client.get('/api/auth/institutes/', HTTP_HOST=h)
+                res = self.client.get('/api/auth/institutes/by-subdomain/bravo/', HTTP_HOST=h)
                 self.assertEqual(res.status_code, 200)
 
     def test_by_subdomain_lookup(self):
@@ -397,6 +397,16 @@ class PlatformSubdomainApiTests(PortalFixtureMixin, TestCase):
     def test_keeping_own_subdomain_is_not_a_conflict(self):
         self.assertEqual(self.patch(self.b, 'BRAVO').status_code, 200)
 
+    def test_platform_owner_access(self):
+        owner = self.make_user('mona', None, role='platform_owner')
+        res = self.client.patch(
+            f'/api/auth/platform/institutes/{self.c.id}/', {'subdomain': 'hd'},
+            content_type='application/json', HTTP_HOST=ROOT, HTTP_AUTHORIZATION=bearer(owner),
+        )
+        self.assertEqual(res.status_code, 200, res.content)
+        res = self.client.get('/api/auth/platform/institutes/', HTTP_HOST=ROOT, HTTP_AUTHORIZATION=bearer(owner))
+        self.assertEqual(res.status_code, 200)
+
     def test_non_owner_cannot_use_platform_endpoint(self):
         res = self.client.patch(
             f'/api/auth/platform/institutes/{self.b.id}/', {'subdomain': 'hijack'},
@@ -544,6 +554,11 @@ class RoleEscalationTests(PortalFixtureMixin, TestCase):
         })
         self.assertEqual(res.status_code, 201, res.content)
         self.assertEqual(User.objects.get(email='plant@example.com').institute, self.b)
+
+    def test_platform_owner_can_grant_platform_roles(self):
+        owner = self.make_user('mona', None, role='platform_owner')
+        res = self.send('patch', f'/api/auth/users/{self.carol.id}/', owner, {'role': 'platform_owner'})
+        self.assertEqual(res.status_code, 200, res.content)
 
     def test_cannot_create_platform_owner(self):
         res = self.send('post', '/api/auth/users/', self.bella, {

@@ -60,7 +60,7 @@ Config is loaded from `.env` via `python-decouple` in [config.py](config.py). Ke
 ## Architecture
 
 ### Django Apps
-- **`accounts`** — Custom `User` (`AUTH_USER_MODEL = 'accounts.User'`, extends `AbstractUser`) and `Institute` models. All users belong to an institute and have a role: `super_admin`, `institute_admin`, `exam_admin`, `teacher`, `student`, `admin`, `staff`, `manager`. Also handles device session management, center/batch management, timetable auth.
+- **`accounts`** — Custom `User` (`AUTH_USER_MODEL = 'accounts.User'`, extends `AbstractUser`) and `Institute` models. Users have roles: `platform_owner` (global), or institute-level `super_admin`, `institute_admin`, `exam_admin`, `teacher`, `student`, `admin`, `staff`. Also handles device session management, center/batch management, timetable auth.
 - **`exams`** — Core `Exam` model, student submissions (`ExamAttempt`), evaluation (auto + AI for subjective), geolocation, proctoring (webcam/gaze), and analytics.
 - **`questions`** — `Question` and `QuestionBank` models. Questions belong to **Exams**, not Patterns. The app also contains the full AI extraction pipeline (see below).
 - **`patterns`** — `ExamPattern` and `PatternSection` templates. Patterns define exam structure (sections, subjects, question types, marks, numbering) but do not hold questions directly.

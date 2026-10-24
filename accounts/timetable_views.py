@@ -13,16 +13,16 @@ from .utils import generate_user_code, generate_password, send_credentials_email
 
 
 def _check_super_admin(request):
-    """Helper to check if user is super admin, manager, or platform owner."""
+    """Helper to check if user is super admin, platform owner, or manager."""
     if not request.user.is_authenticated:
         return False, Response(
             {"detail": "Authentication required."},
             status=status.HTTP_401_UNAUTHORIZED,
         )
     user_role = (request.user.role or '').lower()
-    if user_role not in ['super_admin', 'superadmin', 'manager', 'platform_owner']:
+    if user_role not in ['super_admin', 'superadmin', 'platform_owner', 'manager']:
         return False, Response(
-            {"detail": "Only Super Admin, Manager, or Platform Owner can perform this action."},
+            {"detail": "Only Super Admin or Platform Owner can perform this action."},
             status=status.HTTP_403_FORBIDDEN,
         )
     return True, None
@@ -324,7 +324,7 @@ def _get_center_by_name_or_id(center_name=None, center_id=None):
 
 
 def _check_admin_or_super(request):
-    """Helper to check if user is admin, super admin, manager, or platform owner."""
+    """Helper to check if user is admin, super admin, platform owner, or manager."""
     if not request.user.is_authenticated:
         return False, None, Response(
             {"detail": "Authentication required."},
@@ -332,12 +332,12 @@ def _check_admin_or_super(request):
         )
     user = request.user
     user_role = (user.role or '').lower()
-    is_super = user_role in ['super_admin', 'superadmin', 'manager', 'platform_owner']
+    is_super = user_role in ['super_admin', 'superadmin', 'platform_owner', 'manager']
     is_admin = user_role in ['admin', 'institute_admin', 'exam_admin']
     
     if not (is_super or is_admin):
         return False, None, Response(
-            {"detail": f"Only Admin, Super Admin, or Manager can perform this action. Your role: {user.role}"},
+            {"detail": f"Only Admin, Super Admin, or Platform Owner can perform this action. Your role: {user.role}"},
             status=status.HTTP_403_FORBIDDEN,
         )
     
@@ -555,6 +555,9 @@ def create_student(request):
     
     try:
         with transaction.atomic():
+            institute = center.institute if center else (
+                batch.program.institute if batch.program else getattr(request.user, 'institute', None)
+            )
             user = User.objects.create_user(
                 username=username,
                 email=email or f"{username}@temp.com",
@@ -565,7 +568,7 @@ def create_student(request):
                 phone_number=phone_number or "",
                 role='student',  # Use exam role format (compatible with both)
                 center=center,
-                institute=center.institute,
+                institute=institute,
             )
             
             # Auto-enroll student in the batch
@@ -586,7 +589,7 @@ def create_student(request):
                     "password": password,
                     "user_id": str(user.id),
                     "batch": batch.code,
-                    "center": center.name,
+                    "center": center.name if center else None,
                 },
                 status=status.HTTP_201_CREATED,
             )
@@ -1560,7 +1563,7 @@ def list_people(request):
     institute_id = request.GET.get('institute_id')
     
     user_role = (user.role or '').lower()
-    if user_role in ['super_admin', 'superadmin', 'manager', 'platform_owner']:
+    if user_role in ['super_admin', 'superadmin', 'platform_owner', 'manager']:
         if institute_id:
             try:
                 target_institute = Institute.objects.get(id=institute_id)

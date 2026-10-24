@@ -6,13 +6,15 @@ from .models import BillingInvoice, InstitutePricing, UsageMetric, InvoiceLineIt
 from .serializers import BillingInvoiceSerializer, InstitutePricingSerializer, GlobalPricingSerializer
 from django.db.models import Sum
 from accounts.models import Institute
+from accounts.subdomains import is_platform_user
 from rest_framework.views import APIView
 from django.db import transaction
 from decimal import Decimal
 
 class IsPlatformOwner(permissions.BasePermission):
+    """Platform owners and managers (same platform-level access)."""
     def has_permission(self, request, view):
-        return bool(request.user and request.user.is_authenticated and request.user.role == 'platform_owner')
+        return bool(request.user and request.user.is_authenticated and is_platform_user(request.user))
 
 class GlobalPricingViewSet(viewsets.ModelViewSet):
     """
