@@ -242,26 +242,31 @@ def log_activity(institute, log_type, title, description, user=None, status='inf
     """
     Utility function to create an activity log entry.
     """
-    from .models import ActivityLog
-    
-    ip_address = None
-    if request:
-        x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
-        if x_forwarded_for:
-            ip_address = x_forwarded_for.split(',')[0]
-        else:
-            ip_address = request.META.get('REMOTE_ADDR')
+    try:
+        from .models import ActivityLog
+        
+        ip_address = None
+        if request:
+            x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
+            if x_forwarded_for:
+                ip_address = x_forwarded_for.split(',')[0]
+            else:
+                ip_address = request.META.get('REMOTE_ADDR')
 
-    return ActivityLog.objects.create(
-        institute=institute,
-        log_type=log_type,
-        title=title,
-        description=description,
-        user=user,
-        status=status,
-        metadata=metadata or {},
-        ip_address=ip_address
-    )
+        return ActivityLog.objects.create(
+            institute=institute,
+            log_type=log_type,
+            title=title,
+            description=description,
+            user=user,
+            status=status,
+            metadata=metadata or {},
+            ip_address=ip_address
+        )
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Failed to log activity: {e}")
+        return None
 
 
 def send_credentials_email(user, password):

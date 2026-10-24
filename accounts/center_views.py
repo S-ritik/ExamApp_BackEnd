@@ -37,7 +37,7 @@ def list_people(request, center_id=None):
     institute_id = request.query_params.get('institute_id')
     
     # Build base queryset
-    if user.role in ['super_admin', 'SUPER_ADMIN', 'manager', 'platform_owner']:
+    if user.role in ['super_admin', 'SUPER_ADMIN', 'platform_owner', 'manager']:
         if effective_center_id:
             queryset = User.objects.filter(
                 Q(center_id=effective_center_id) | Q(center__isnull=True, institute=user.institute)

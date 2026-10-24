@@ -10,6 +10,7 @@ class InstituteRouter:
         # userinstitutemembership links two shared models, so it is shared too;
         # its center FK points into the tenant DB (db_constraint=False).
         'accounts': ['institute', 'user', 'userinstitutemembership', 'devicesession', 'activitylog'],
+        'billing': None,     # All billing models stay in the shared database
         'contenttypes': None, # All models in this app
         'auth': None,        # All models in this app
         'sessions': None,    # All models in this app

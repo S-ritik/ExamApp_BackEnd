@@ -2,6 +2,7 @@
 Cross-institute access rules.
 
 Only platform users (platform_owner, manager) work across institutes.
+Only platform users (platform_owner) work across institutes.
 Everyone else -- super_admin included, who owns ONE institute -- is limited
 to their primary institute plus institutes they hold an active membership
 in. Role checks ("is this user an admin?") stay in the views; this module
@@ -17,11 +18,12 @@ from .subdomains import is_platform_user
 ADMIN_ROLES = frozenset({'super_admin', 'institute_admin', 'exam_admin', 'admin'})
 
 # Who may grant which role: an actor may assign roles ranked at or below
-# their own. Platform roles can only be granted by the platform owner.
+# their own. Platform roles (platform_owner, manager -- same access) can only
+# be granted by platform users.
 ROLE_RANK = {
     'student': 1, 'teacher': 2, 'staff': 2,
     'admin': 3, 'exam_admin': 3, 'institute_admin': 4,
-    'super_admin': 5, 'manager': 6, 'platform_owner': 7,
+    'super_admin': 5, 'manager': 6, 'platform_owner': 6,
 }
 
 
@@ -74,7 +76,7 @@ def can_assign_role(actor, role):
     role = (role or '').lower()
     if role not in ROLE_RANK:
         return False
-    if _role(actor) == 'platform_owner':
+    if is_platform_user(actor):
         return True
     if role in ('platform_owner', 'manager'):
         return False
@@ -84,10 +86,10 @@ def can_assign_role(actor, role):
 
 def can_change_role(actor, target, new_role):
     """
-    Role changes on an existing user: nobody re-ranks themselves (except the
-    platform owner), and an actor cannot re-rank someone who outranks them.
+    Role changes on an existing user: nobody re-ranks themselves (except
+    platform users), and an actor cannot re-rank someone who outranks them.
     """
-    if _role(actor) == 'platform_owner':
+    if is_platform_user(actor):
         return (new_role or '').lower() in ROLE_RANK
     if actor.pk == target.pk:
         return False

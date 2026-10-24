@@ -136,6 +136,7 @@ class InstituteInvitationSerializer(serializers.ModelSerializer):
 
 
 class UserRegistrationSerializer(serializers.ModelSerializer):
+    username = serializers.CharField(required=False, allow_blank=True)
     password = serializers.CharField(write_only=True, validators=[validate_password])
     password_confirm = serializers.CharField(write_only=True)
     institute_id = serializers.IntegerField(required=False, allow_null=True)
@@ -149,9 +150,35 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
             'password_confirm', 'phone', 'institute_id', 'center_id', 'role'
         ]
 
+    def validate_institute_id(self, value):
+        if value:
+            from accounts.models import Institute
+            if not Institute.objects.filter(id=value).exists():
+                raise serializers.ValidationError(f"Institute with ID {value} does not exist.")
+        return value
+
+    def validate_center_id(self, value):
+        if value:
+            from accounts.models import Center
+            if not Center.objects.filter(id=value).exists():
+                raise serializers.ValidationError(f"Center with ID {value} does not exist.")
+        return value
+
     def validate(self, attrs):
-        if attrs['password'] != attrs['password_confirm']:
-            raise serializers.ValidationError("Passwords don't match")
+        if attrs.get('password') != attrs.get('password_confirm'):
+            raise serializers.ValidationError({"password_confirm": "Passwords don't match."})
+
+        # Auto-generate username from email if not provided
+        if not attrs.get('username'):
+            email = attrs.get('email', '')
+            base_username = email.split('@')[0] if email else 'user'
+            username = base_username
+            counter = 1
+            while User.objects.filter(username=username).exists():
+                username = f"{base_username}_{counter}"
+                counter += 1
+            attrs['username'] = username
+
         return attrs
 
     def create(self, validated_data):
@@ -182,13 +209,19 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
             role=role
         )
         if center:
-            user.center = center
-            user.save()
+            try:
+                user.center = center
+                user.save()
+            except Exception:
+                pass
 
         # Record usage if it's a student
         if user.role == 'student' and user.institute:
-            from billing.utils import record_usage
-            record_usage(user.institute, 'student_onboarding', reference_id=user.id)
+            try:
+                from billing.utils import record_usage
+                record_usage(user.institute, 'student_onboarding', reference_id=user.id)
+            except Exception:
+                pass
 
         return user
 
@@ -288,22 +321,31 @@ class UserSerializer(serializers.ModelSerializer):
     
     def get_center_id(self, obj):
         """Get center ID - either from direct assignment or from admin_centers"""
-        if obj.center_id:
-            return str(obj.center_id)
-        # Check if user is admin of any center
-        admin_center = obj.admin_centers.first()
-        if admin_center:
-            return str(admin_center.id)
+        try:
+            if obj.center_id:
+                return str(obj.center_id)
+            # Check if user is admin of any center
+            admin_center = getattr(obj, 'admin_centers', None)
+            if admin_center:
+                first = admin_center.first()
+                if first:
+                    return str(first.id)
+        except Exception:
+            pass
         return None
     
     def get_center_name(self, obj):
         """Get center name - either from direct assignment or from admin_centers"""
-        if obj.center:
-            return obj.center.name
-        # Check if user is admin of any center
-        admin_center = obj.admin_centers.first()
-        if admin_center:
-            return admin_center.name
+        try:
+            if obj.center_id and obj.center:
+                return obj.center.name
+            admin_center = getattr(obj, 'admin_centers', None)
+            if admin_center:
+                first = admin_center.first()
+                if first:
+                    return first.name
+        except Exception:
+            pass
         return None
 
     def to_representation(self, instance):
