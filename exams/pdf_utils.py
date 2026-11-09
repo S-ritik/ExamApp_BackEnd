@@ -28,6 +28,34 @@ from .models import QuestionEvaluation
 LOGO_COLOR_HEX = "#094fb5"
 LOGO_COLOR = colors.HexColor(LOGO_COLOR_HEX)
 
+# Extracted questions store figures as BARE urls (e.g. Mathpix crops), and the
+# exam UI (frontend LaTeXRenderer.tsx) detects them with these same rules. The
+# PDF code only understands markdown images, so bare urls are wrapped first.
+# Lookbehind skips urls already inside ![](...) or src="...".
+_BARE_IMAGE_URL_RE = re.compile(
+    r'(?<![(\"\'=])'
+    r'(https?://[^\s]+\.(?:jpg|jpeg|png|gif|svg|webp|bmp)(?:\?[^\s]*)?'
+    r'|https?://(?:cdn\.mathpix\.com|i\.imgur\.com|media\.geeksforgeeks\.org)[^\s]+)',
+    re.IGNORECASE,
+)
+
+
+def _wrap_bare_image_urls(text) -> str:
+    """Turn bare image urls into ``![](url)`` so the PDF embeds them."""
+    if text is None:
+        return ""
+    text = str(text)
+    if 'http' not in text:
+        return text
+
+    def _wrap(match):
+        url = match.group(0)
+        # Keep sentence punctuation that ends up glued to the url outside it.
+        stripped = url.rstrip('.,;:)]}')
+        return f'![]({stripped}){url[len(stripped):]}'
+
+    return _BARE_IMAGE_URL_RE.sub(_wrap, text)
+
 
 def _sanitize_for_reportlab(text):
     """Escape text so it is safe inside a ReportLab Paragraph (XML-based)."""
@@ -881,6 +909,7 @@ def generate_question_paper_pdf(exam) -> BytesIO:
             return txt
 
         import base64
+        text = _wrap_bare_image_urls(text)
         # Pre-process images (hide them in placeholders)
         if '![' in text or 'data:image' in text:
             text = process_markup_images(text)
@@ -1017,9 +1046,9 @@ def generate_question_paper_pdf(exam) -> BytesIO:
         import urllib.request
         import base64
         
-        text = str(text)
+        text = _wrap_bare_image_urls(text)
         image_paths = []
-        
+
         # Pattern for markdown images: ![alt](url)
         pattern = r'!\[(.*?)\]\s*\((https?://[^\s\)]+)\)'
         
@@ -1094,7 +1123,7 @@ def generate_question_paper_pdf(exam) -> BytesIO:
         import re
         
         # First, remove markdown images from the raw text (before processing)
-        text = re.sub(r'!\[.*?\]\s*\(https?://[^\)]+\)', '', str(text), flags=re.IGNORECASE)
+        text = re.sub(r'!\[.*?\]\s*\(https?://[^\)]+\)', '', _wrap_bare_image_urls(text), flags=re.IGNORECASE)
         
         # Now use the full sanitize_pdf_text for proper LaTeX processing
         text = sanitize_pdf_text(text)
@@ -1315,7 +1344,7 @@ def generate_question_paper_pdf(exam) -> BytesIO:
             option_labels = ['(1)', '(2)', '(3)', '(4)', '(5)', '(6)']
             
             # Check if any option contains images
-            any_option_has_image = any('![' in str(opt) and 'http' in str(opt) for opt in q.options)
+            any_option_has_image = any('![' in _wrap_bare_image_urls(opt) for opt in q.options)
             
             # Heuristic: Use vertical layout if ANY option has images or very long text
             force_vertical = any_option_has_image
@@ -1811,7 +1840,7 @@ def generate_question_paper_pdf(exam) -> BytesIO:
                     option_labels = ['(1)', '(2)', '(3)', '(4)', '(5)', '(6)']
                     
                     # Check if any option contains images or complex LaTeX
-                    any_option_has_image = any('![' in str(opt) and 'http' in str(opt) for opt in q.options)
+                    any_option_has_image = any('![' in _wrap_bare_image_urls(opt) for opt in q.options)
                     any_option_has_latex = any(has_complex_latex(str(opt)) for opt in q.options)
                     
                     # Heuristic: Use vertical layout if images/complex LaTeX present or text very long

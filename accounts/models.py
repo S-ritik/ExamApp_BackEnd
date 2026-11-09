@@ -132,7 +132,6 @@ class User(AbstractUser):
         ('student', 'Student'),
         ('admin', 'Center Admin'),
         ('staff', 'Staff'),
-        ('manager', 'Manager'),
     ]
     
     # ===========
@@ -204,13 +203,15 @@ class User(AbstractUser):
         blank=True
     )
     
-    # Center relation (for timetable system)
+    # Center relation (for timetable system). Users live in the shared DB but
+    # centers live in the institute's tenant DB, so no DB-level constraint.
     center = models.ForeignKey(
         "Center",
         null=True,
         blank=True,
         on_delete=models.SET_NULL,
         related_name="users",
+        db_constraint=False,
         help_text="Center to which the user belongs (timetable system).",
     )
     

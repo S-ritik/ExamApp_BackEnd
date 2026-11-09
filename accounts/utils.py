@@ -253,16 +253,19 @@ def log_activity(institute, log_type, title, description, user=None, status='inf
             else:
                 ip_address = request.META.get('REMOTE_ADDR')
 
-        return ActivityLog.objects.create(
-            institute=institute,
-            log_type=log_type,
-            title=title,
-            description=description,
-            user=user,
-            status=status,
-            metadata=metadata or {},
-            ip_address=ip_address
-        )
+        # Savepoint: a failed insert must not abort the caller's transaction
+        from django.db import router, transaction
+        with transaction.atomic(using=router.db_for_write(ActivityLog)):
+            return ActivityLog.objects.create(
+                institute=institute,
+                log_type=log_type,
+                title=title,
+                description=description,
+                user=user,
+                status=status,
+                metadata=metadata or {},
+                ip_address=ip_address
+            )
     except Exception as e:
         import logging
         logging.getLogger(__name__).warning(f"Failed to log activity: {e}")

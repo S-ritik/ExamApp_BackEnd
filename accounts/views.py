@@ -49,6 +49,7 @@ def user_registration_view(request):
     """
     serializer = UserRegistrationSerializer(data=request.data)
     serializer.is_valid(raise_exception=True)
+    _authorize_registration(request.user, serializer.validated_data)
 
     try:
         with transaction.atomic():
@@ -65,11 +66,13 @@ def user_registration_view(request):
                 status='success',
                 request=request
             ) if user.institute else None
-    except IntegrityError as e:
+    except IntegrityError:
+        # Validation already rejects duplicates; this covers two concurrent sign-ups
+        detail = 'A user with this email or username already exists.'
         return Response({
-            'detail': 'A user with these details already exists or invalid reference provided.',
+            'detail': detail,
             'code': 'integrity_error',
-            'error': str(e)
+            'error': detail,
         }, status=status.HTTP_400_BAD_REQUEST)
 
     # Send credentials email outside transaction so email failure doesn't rollback user creation
@@ -90,6 +93,26 @@ def user_registration_view(request):
         'onboarding_required': user.institute is None,
         'message': 'User registered successfully'
     }, status=status.HTTP_201_CREATED)
+
+
+def _authorize_registration(actor, data):
+    """
+    Public sign-up only creates a plain student account with no institute
+    (institute onboarding comes later). Anything more -- another role, an
+    institute or a center -- needs an admin allowed to grant it.
+    """
+    role = data.get('role') or 'student'
+    institute_id = data.get('institute_id')
+
+    if not actor.is_authenticated:
+        if role != 'student' or institute_id or data.get('center'):
+            raise PermissionDenied("Sign in as an administrator to create users with a role, institute or center.")
+        return
+
+    if not can_assign_role(actor, role):
+        raise PermissionDenied(f"You cannot create users with the role '{role}'.")
+    if institute_id and not can_access_institute(actor, institute_id, write=True):
+        raise PermissionDenied("You cannot create users in this institute.")
 
 
 @api_view(['POST'])
@@ -449,7 +472,7 @@ class UserListView(generics.ListCreateAPIView):
         center_id = self.request.query_params.get('center_id')
         
         user_role = (user.role or '').lower()
-        if user_role in ['super_admin', 'superadmin', 'platform_owner', 'manager']:
+        if user_role in ['super_admin', 'superadmin'] or is_platform_user(user):
             if not eff_institute_id and not is_platform_user(user):
                 return User.objects.none()
             queryset = User.objects.all()
@@ -479,7 +502,7 @@ class UserListView(generics.ListCreateAPIView):
         user_role = (user.role or '').lower()
         
         # Check permissions
-        if user_role not in ['super_admin', 'superadmin', 'institute_admin', 'exam_admin', 'admin', 'platform_owner', 'manager']:
+        if user_role not in ['super_admin', 'superadmin', 'institute_admin', 'exam_admin', 'admin'] and not is_platform_user(user):
              raise PermissionDenied("You do not have permission to create users.")
 
         requested_role = serializer.validated_data.get('role') or 'student'
@@ -625,7 +648,7 @@ class InstituteUpdateView(generics.UpdateAPIView):
     def get_queryset(self):
         user = self.request.user
         user_role = (user.role or '').lower()
-        if user_role in ['platform_owner', 'manager']:
+        if is_platform_user(user):
             return Institute.objects.all()
         if user_role in ['super_admin', 'superadmin', 'institute_admin']:
             if user.institute_id:
