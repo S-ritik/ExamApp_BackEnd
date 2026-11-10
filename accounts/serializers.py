@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from rest_framework.validators import UniqueValidator
 from django.contrib.auth import authenticate
 from django.contrib.auth.password_validation import validate_password
 from django.utils import timezone
@@ -90,8 +91,7 @@ class InstituteCreateSerializer(serializers.ModelSerializer):
         institute = Institute.objects.create(**validated_data)
         
         # Update user's institute and role - make them super_admin only for onboarding users
-        user_role = (getattr(user, 'role', '') or '').lower()
-        if user_role not in ['manager', 'platform_owner']:
+        if not is_platform_user(user):
             user.institute = institute
             user.role = 'super_admin'
             user.is_staff = True  # Give staff access
@@ -136,37 +136,50 @@ class InstituteInvitationSerializer(serializers.ModelSerializer):
 
 
 class UserRegistrationSerializer(serializers.ModelSerializer):
-    username = serializers.CharField(required=False, allow_blank=True)
+    username = serializers.CharField(
+        required=False, allow_blank=True, max_length=150,
+        validators=[UniqueValidator(queryset=User.objects.all(), message='A user with that username already exists.')],
+    )
     password = serializers.CharField(write_only=True, validators=[validate_password])
     password_confirm = serializers.CharField(write_only=True)
     institute_id = serializers.IntegerField(required=False, allow_null=True)
-    center_id = serializers.CharField(required=False, allow_null=True)
-    role = serializers.CharField(required=False, allow_null=True)
+    center_id = serializers.UUIDField(required=False, allow_null=True)
+    role = serializers.CharField(required=False, allow_null=True, allow_blank=True)
 
     class Meta:
         model = User
         fields = [
-            'email', 'username', 'first_name', 'last_name', 'password', 
+            'email', 'username', 'first_name', 'last_name', 'password',
             'password_confirm', 'phone', 'institute_id', 'center_id', 'role'
         ]
 
-    def validate_institute_id(self, value):
-        if value:
-            from accounts.models import Institute
-            if not Institute.objects.filter(id=value).exists():
-                raise serializers.ValidationError(f"Institute with ID {value} does not exist.")
-        return value
+    def validate_role(self, value):
+        # Frontend sends some roles uppercase (e.g. 'SUPER_ADMIN')
+        role = (value or 'student').lower()
+        if role not in dict(User.ROLE_CHOICES):
+            raise serializers.ValidationError(f"Unknown role '{value}'.")
+        return role
 
-    def validate_center_id(self, value):
-        if value:
-            from accounts.models import Center
-            if not Center.objects.filter(id=value).exists():
-                raise serializers.ValidationError(f"Center with ID {value} does not exist.")
+    def validate_institute_id(self, value):
+        if value and not Institute.objects.filter(id=value).exists():
+            raise serializers.ValidationError(f"Institute with ID {value} does not exist.")
         return value
 
     def validate(self, attrs):
         if attrs.get('password') != attrs.get('password_confirm'):
             raise serializers.ValidationError({"password_confirm": "Passwords don't match."})
+
+        # Centers live in the tenant DB the middleware selected for this request
+        center_id = attrs.pop('center_id', None)
+        if center_id:
+            from accounts.models import Center
+            center = Center.objects.filter(id=center_id).first()
+            if center is None:
+                raise serializers.ValidationError({"center_id": f"Center with ID {center_id} does not exist."})
+            institute_id = attrs.get('institute_id')
+            if institute_id and center.institute_id != institute_id:
+                raise serializers.ValidationError({"center_id": "Center does not belong to this institute."})
+            attrs['center'] = center
 
         # Auto-generate username from email if not provided
         if not attrs.get('username'):
@@ -183,45 +196,22 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         validated_data.pop('password_confirm')
-        # Extract institute_id, center_id and role if provided
         institute_id = validated_data.pop('institute_id', None)
-        center_id = validated_data.pop('center_id', None)
-        role = validated_data.pop('role', 'student')  # Default to student (lowercase) if not provided
+        center = validated_data.pop('center', None)
+        role = validated_data.pop('role', None) or 'student'
 
-        # ALWAYS normalize role to lowercase to prevent uppercase roles
-        role = role.lower() if role else 'student'
-
-        # Resolve center object from tenant DB to avoid cross-DB FK issues
-        center = None
-        if center_id:
-            try:
-                from accounts.utils import get_current_db
-                from accounts.models import Center
-                current_db = get_current_db() or 'default'
-                center = Center.objects.using(current_db).get(id=center_id)
-            except Exception:
-                center = None
-
-        # Create user with institute, center and role
+        # center_id, not center=: the center row is in the tenant DB, the user in the shared one
         user = User.objects.create_user(
             **validated_data,
             institute_id=institute_id,
+            center_id=center.id if center else None,
             role=role
         )
-        if center:
-            try:
-                user.center = center
-                user.save()
-            except Exception:
-                pass
 
-        # Record usage if it's a student
+        # Record usage if it's a student (best-effort, never blocks registration)
         if user.role == 'student' and user.institute:
-            try:
-                from billing.utils import record_usage
-                record_usage(user.institute, 'student_onboarding', reference_id=user.id)
-            except Exception:
-                pass
+            from billing.utils import record_usage
+            record_usage(user.institute, 'student_onboarding', reference_id=user.id)
 
         return user
 

@@ -20,10 +20,12 @@ ADMIN_ROLES = frozenset({'super_admin', 'institute_admin', 'exam_admin', 'admin'
 # Who may grant which role: an actor may assign roles ranked at or below
 # their own. Platform roles (platform_owner, manager -- same access) can only
 # be granted by platform users.
+# their own. Platform roles (platform_owner) can only be granted by platform users.
 ROLE_RANK = {
     'student': 1, 'teacher': 2, 'staff': 2,
     'admin': 3, 'exam_admin': 3, 'institute_admin': 4,
-    'super_admin': 5, 'manager': 6, 'platform_owner': 6,
+    'super_admin': 5, 'manager': 6, 'platform_owner': 7,
+    'super_admin': 5, 'platform_owner': 6,
 }
 
 
@@ -78,7 +80,8 @@ def can_assign_role(actor, role):
         return False
     if is_platform_user(actor):
         return True
-    if role in ('platform_owner', 'manager'):
+ #   if role in ('platform_owner', 'manager'):
+    if role == 'platform_owner':
         return False
     actor_rank = ROLE_RANK.get(_role(actor), 0)
     return actor_rank >= ROLE_RANK['admin'] and ROLE_RANK[role] <= actor_rank
