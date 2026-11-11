@@ -11,6 +11,7 @@ class PlatformInstituteSerializer(serializers.ModelSerializer):
     active_user_count = serializers.IntegerField(source='get_active_user_count', read_only=True)
     center_count = serializers.IntegerField(source='centers.count', read_only=True)
     subdomain = SubdomainField(max_length=63)
+    is_active = serializers.BooleanField(required=False)
 
     class Meta:
         model = Institute
@@ -20,6 +21,18 @@ class PlatformInstituteSerializer(serializers.ModelSerializer):
             'is_active', 'created_at', 'super_admin', 'user_count', 
             'active_user_count', 'center_count', 'db_name'
         ]
+        read_only_fields = ['id', 'created_at', 'db_name', 'user_count', 'active_user_count', 'center_count']
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        # The institute's existing status (Online or Paused) should remain unchanged
+        # when its details are updated. The status should change only when the platform
+        # owner explicitly includes is_active in the payload.
+        if 'is_active' not in self.initial_data:
+            attrs.pop('is_active', None)
+        if 'is_verified' not in self.initial_data:
+            attrs.pop('is_verified', None)
+        return attrs
 
     def get_super_admin(self, obj):
         # find the creator or one of the super admins

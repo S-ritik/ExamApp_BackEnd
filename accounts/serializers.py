@@ -54,7 +54,18 @@ class InstituteSerializer(serializers.ModelSerializer):
         ]
         # Subdomains are assigned by the platform owner (platform_serializers),
         # not by institute admins, so a tenant cannot claim or change one here.
-        read_only_fields = ['id', 'subdomain', 'created_at', 'updated_at', 'user_count', 'active_user_count', 'created_by_name']
+        # is_active and is_verified can only be modified explicitly by the platform owner.
+        read_only_fields = [
+            'id', 'subdomain', 'is_active', 'is_verified', 'created_at', 'updated_at',
+            'user_count', 'active_user_count', 'created_by_name'
+        ]
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        # Ensure updating institute details never accidentally alters active or verified status
+        attrs.pop('is_active', None)
+        attrs.pop('is_verified', None)
+        return attrs
     
     def get_user_count(self, obj):
         return obj.get_user_count()

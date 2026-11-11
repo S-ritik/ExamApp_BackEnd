@@ -115,3 +115,34 @@ def create_institute_with_admin(request):
         )
     except Exception as e:
         return Response({'detail': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST', 'PATCH'])
+@permission_classes([IsPlatformOwner])
+def toggle_institute_status(request, pk):
+    """
+    Explicit endpoint for platform owner to manually switch the institute's status
+    between Online and Paused.
+    Accepts optional { "is_active": boolean } or toggles current status if not provided.
+    The status changes only when the platform owner explicitly performs this action.
+    """
+    try:
+        institute = Institute.objects.get(pk=pk)
+    except Institute.DoesNotExist:
+        return Response({'detail': 'Institute not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    if 'is_active' in request.data:
+        new_status = bool(request.data['is_active'])
+    else:
+        new_status = not institute.is_active
+
+    institute.is_active = new_status
+    institute.save(update_fields=['is_active', 'updated_at'])
+
+    return Response({
+        'id': institute.id,
+        'name': institute.name,
+        'is_active': institute.is_active,
+        'status_label': 'Online' if institute.is_active else 'Paused',
+        'message': f"Institute status successfully changed to {'Online' if institute.is_active else 'Paused'}."
+    }, status=status.HTTP_200_OK)
